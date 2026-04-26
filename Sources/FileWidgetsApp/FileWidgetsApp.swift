@@ -12,7 +12,7 @@ struct FileWidgetsApp: App {
         }
         .windowResizability(.contentSize)
 
-        MenuBarExtra("Desktop File Box Widget", systemImage: "folder.badge.plus") {
+        MenuBarExtra("File Tray", systemImage: "folder.badge.plus") {
             MenuBarContentView(surfaceManager: surfaceManager)
         }
     }

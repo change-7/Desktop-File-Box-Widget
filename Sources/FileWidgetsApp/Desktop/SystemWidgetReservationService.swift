@@ -6,7 +6,7 @@ final class SystemWidgetReservationService {
     static let shared = SystemWidgetReservationService()
 
     private let notificationCenterBundleID = "com.apple.notificationcenterui"
-    private let metrics = WidgetGridMetrics()
+    private let reservedInset: CGFloat = 10
 
     private init() {}
 
@@ -29,7 +29,9 @@ final class SystemWidgetReservationService {
                 return nil
             }
 
-            return resolvedWindow.frame.insetBy(dx: -metrics.itemSpacing, dy: -metrics.itemSpacing)
+            // Keep a small exclusion zone around the real system widget frame,
+            // but do not expand it enough to make nearby manual placement jittery.
+            return resolvedWindow.frame.insetBy(dx: reservedInset, dy: reservedInset)
         }
     }
 

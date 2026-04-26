@@ -43,6 +43,7 @@ final class DesktopSurfaceManager: ObservableObject {
             title: nextIndex == 0 ? "Pinned Files" : "Pinned Files \(nextIndex + 1)",
             panelSize: metrics.defaultPanelSize,
             backgroundOpacity: 0.78,
+            displayMode: .grid,
             items: []
         )
 

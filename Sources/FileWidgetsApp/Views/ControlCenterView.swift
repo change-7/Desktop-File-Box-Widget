@@ -5,10 +5,10 @@ struct ControlCenterView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Desktop File Box Widget")
+            Text("File Tray")
                 .font(.title2.weight(.semibold))
 
-            Text("Desktop-pinned file panels with numeric size input, widget-only alignment snap, keyboard selection, Quick Look, and direct unpin controls.")
+            Text("Widgets for your desktop files, with movable file panels, Quick Look, and direct unpin controls.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

@@ -9,6 +9,7 @@ struct WidgetGridMetrics {
     let defaultPanelSize = CGSize(width: 420, height: 240)
     let minimumPanelSize = CGSize(width: 250, height: 170)
     let maximumPanelSize = CGSize(width: 760, height: 520)
+    let desktopCellSize = CGSize(width: 94, height: 94)
     let alignmentSnapThreshold: CGFloat = 12
     let outerPadding: CGFloat = 8
     let contentPadding: CGFloat = 14

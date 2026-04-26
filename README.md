@@ -1,6 +1,6 @@
-# Desktop File Box Widget
+# File Tray
 
-Desktop File Box Widget is a macOS desktop utility that lets you group files and folders into movable desktop widgets without deleting them.
+File Tray is a macOS desktop utility: widgets for your desktop files. It lets you group files and folders into movable desktop widgets without deleting them.
 
 ## What It Does
 
@@ -34,12 +34,12 @@ swift build
 The packaged app is created at:
 
 ```text
-dist/Desktop File Box Widget.app
+dist/File Tray.app
 ```
 
 ## Usage
 
-1. Launch `Desktop File Box Widget.app`
+1. Launch `File Tray.app`
 2. Create or select a widget from the menu bar
 3. Drag files or folders from Finder into a widget
 4. Double click an item to open it

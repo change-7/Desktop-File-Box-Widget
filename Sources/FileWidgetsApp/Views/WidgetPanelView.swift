@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 struct WidgetPanelView: View {
     @ObservedObject var widgetModel: WidgetModel
     let isEditing: Bool
+    let onToggleEditLayout: () -> Void
+    let onSetDisplayMode: (WidgetDisplayMode) -> Void
     let onSelect: (WidgetItem) -> Void
     let onOpen: (WidgetItem) -> Void
     let onRevealInFinder: (WidgetItem) -> Void
@@ -19,13 +21,32 @@ struct WidgetPanelView: View {
     @State private var hoveredItemID: WidgetItem.ID?
     @State private var draftTitle = ""
     @State private var draftBackgroundOpacity = 0.78
+    @State private var draftOpacity = ""
     @State private var draftWidth = ""
     @State private var draftHeight = ""
+    @State private var sizeInputMode: SizeInputMode = .pixels
     @FocusState private var focusedField: SizeField?
 
     private enum SizeField {
         case width
         case height
+        case opacity
+    }
+
+    private enum SizeInputMode: String, CaseIterable, Identifiable {
+        case pixels
+        case cells
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .pixels:
+                return "Pixels"
+            case .cells:
+                return "Cells"
+            }
+        }
     }
 
     private var effectiveBackgroundOpacity: Double {
@@ -82,60 +103,35 @@ struct WidgetPanelView: View {
                         EmptyWidgetDropZone(isEditing: isEditing, isDropTargeted: isDropTargeted)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     } else {
-                        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: metrics.itemSpacing) {
-                            ForEach(widgetModel.items) { item in
-                                let baseCell = WidgetItemCell(
-                                    item: item,
-                                    itemSize: itemLayout.itemSize,
-                                    metrics: metrics,
-                                    isSelected: widgetModel.selectedItemID == item.id,
-                                    removalStyle: isEditing ? .remove : .unpin,
-                                    showsRemoveButton: isEditing || hoveredItemID == item.id,
-                                    onRemove: { onRemoveItem(item) }
-                                )
-                                    .contentShape(RoundedRectangle(cornerRadius: metrics.itemCornerRadius, style: .continuous))
-                                    .onHover { isHovering in
-                                        if isHovering {
-                                            hoveredItemID = item.id
-                                        } else if hoveredItemID == item.id {
-                                            hoveredItemID = nil
-                                        }
-                                    }
-                                    .contextMenu {
-                                        if !isEditing {
-                                            Button("Open") {
-                                                onOpen(item)
-                                            }
-                                        }
-
-                                        Button("Reveal in Finder") {
-                                            onRevealInFinder(item)
-                                        }
-
-                                        Divider()
-
-                                        Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
-                                            onRemoveItem(item)
-                                        }
-                                    }
-
-                                if isEditing {
-                                    baseCell
-                                } else {
-                                    baseCell
-                                        .onTapGesture {
-                                            onSelect(item)
-                                        }
-                                        .onTapGesture(count: 2) {
-                                            onOpen(item)
-                                        }
+                        if widgetModel.displayMode == .list {
+                            listContent(panelSize: panelSize)
+                        } else {
+                            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: metrics.itemSpacing) {
+                                ForEach(widgetModel.items) { item in
+                                    makeItemCell(item: item, itemSize: itemLayout.itemSize)
                                 }
                             }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 }
                 .padding(metrics.panelContentInset)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous))
+            .contextMenu {
+                Button(isEditing ? "Finish Layout" : "Edit Layout") {
+                    onToggleEditLayout()
+                }
+
+                Menu("View As") {
+                    Button("Icons") {
+                        onSetDisplayMode(.grid)
+                    }
+
+                    Button("List") {
+                        onSetDisplayMode(.list)
+                    }
+                }
             }
         }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: dropTargetBinding) { providers in
@@ -186,42 +182,25 @@ struct WidgetPanelView: View {
     }
 
     private func header(panelSize: CGSize) -> some View {
-        VStack(alignment: .leading, spacing: isEditing ? 6 : 4) {
+        let usesCompactEditorHeader = panelSize.width < 470
+
+        return VStack(alignment: .leading, spacing: isEditing ? 6 : 4) {
             if isEditing {
-                HStack(alignment: .center, spacing: 8) {
-                    TextField(
-                        "Widget Name",
-                        text: Binding(
-                            get: { draftTitle },
-                            set: {
-                                draftTitle = $0
-                                onRename($0)
-                            }
-                        )
-                    )
-                    .textFieldStyle(.plain)
-                    .font(.headline.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                if usesCompactEditorHeader {
+                    VStack(alignment: .leading, spacing: 6) {
+                        titleField
 
-                    HStack(spacing: 4) {
-                        sizeField(title: "W", text: $draftWidth, field: .width)
-                        Text("×")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        sizeField(title: "H", text: $draftHeight, field: .height)
+                        HStack(alignment: .center, spacing: 8) {
+                            sizeModePicker
+                            sizeEditor
+                        }
                     }
-
-                    Button("Apply") {
-                        applyDraftSize()
+                } else {
+                    HStack(alignment: .center, spacing: 8) {
+                        titleField
+                        sizeModePicker
+                        sizeEditor
                     }
-                    .buttonStyle(.borderless)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(.white.opacity(0.10), in: Capsule())
-                    .disabled(parsedDraftWidth == nil || parsedDraftHeight == nil)
                 }
 
                 HStack(spacing: 8) {
@@ -230,22 +209,7 @@ struct WidgetPanelView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 42, alignment: .leading)
 
-                    Slider(
-                        value: Binding(
-                            get: { draftBackgroundOpacity },
-                            set: {
-                                draftBackgroundOpacity = $0
-                                onBackgroundOpacityChange($0)
-                            }
-                        ),
-                        in: 0.0...1.0
-                    )
-                    .tint(.white.opacity(0.85))
-
-                    Text("\(Int(widgetModel.backgroundOpacity * 100))%")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 34, alignment: .trailing)
+                    opacityField
                 }
             } else {
                 Text(widgetModel.title)
@@ -255,19 +219,263 @@ struct WidgetPanelView: View {
         .frame(minHeight: metrics.titleAreaHeight, alignment: .top)
     }
 
-    private func sizeField(title: String, text: Binding<String>, field: SizeField) -> some View {
-        TextField(title, text: text)
-            .textFieldStyle(.plain)
-            .font(.caption2.monospacedDigit())
-            .multilineTextAlignment(.center)
-            .frame(width: 52)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .focused($focusedField, equals: field)
-            .onSubmit {
-                applyDraftSize()
+    private var titleField: some View {
+        TextField(
+            "Widget Name",
+            text: Binding(
+                get: { draftTitle },
+                set: {
+                    draftTitle = $0
+                    onRename($0)
+                }
+            )
+        )
+        .textFieldStyle(.plain)
+        .font(.headline.weight(.semibold))
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var sizeModePicker: some View {
+        Picker("Size Unit", selection: $sizeInputMode) {
+            ForEach(SizeInputMode.allCases) { mode in
+                Text(mode.title).tag(mode)
             }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 122)
+        .onChange(of: sizeInputMode) { _, _ in
+            syncSizeDraft(from: widgetModel.panelSize)
+        }
+    }
+
+    private var sizeEditor: some View {
+        HStack(spacing: 4) {
+            sizeField(title: "W", text: $draftWidth, field: .width)
+            Text("×")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            sizeField(title: "H", text: $draftHeight, field: .height)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var opacityField: some View {
+        HStack(spacing: 4) {
+            ArrowStepperTextField(
+                placeholder: "%",
+                text: $draftOpacity,
+                onArrowStep: { delta in
+                    stepSizeField(.opacity, delta: delta)
+                },
+                onSubmit: {
+                    applyDraftOpacity()
+                },
+                onFocusChanged: { isFocused in
+                    focusedField = isFocused ? .opacity : nil
+                }
+            )
+                .frame(width: 48)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .onChange(of: draftOpacity) { _, _ in
+                    applyDraftOpacity()
+                }
+
+            Text("%")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func makeItemCell(item: WidgetItem, itemSize: CGSize) -> some View {
+        let baseCell = WidgetItemCell(
+            item: item,
+            itemSize: itemSize,
+            metrics: metrics,
+            isSelected: widgetModel.selectedItemID == item.id,
+            removalStyle: isEditing ? .remove : .unpin,
+            showsRemoveButton: isEditing || hoveredItemID == item.id,
+            onRemove: { onRemoveItem(item) }
+        )
+        .contentShape(RoundedRectangle(cornerRadius: metrics.itemCornerRadius, style: .continuous))
+        .onHover { isHovering in
+            if isHovering {
+                hoveredItemID = item.id
+            } else if hoveredItemID == item.id {
+                hoveredItemID = nil
+            }
+        }
+        .contextMenu {
+            if !isEditing {
+                Button("Open") {
+                    onOpen(item)
+                }
+            }
+
+            Button("Reveal in Finder") {
+                onRevealInFinder(item)
+            }
+
+            Divider()
+
+            Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
+                onRemoveItem(item)
+            }
+        }
+
+        if isEditing {
+            baseCell
+        } else {
+            baseCell
+                .onTapGesture {
+                    onSelect(item)
+                }
+                .onTapGesture(count: 2) {
+                    onOpen(item)
+                }
+        }
+    }
+
+    private func listContent(panelSize: CGSize) -> some View {
+        let estimatedHeaderHeight = isEditing
+            ? metrics.titleAreaHeight + metrics.headerEditorHeight + metrics.sliderSectionHeight + 18
+            : metrics.titleAreaHeight + 6
+        let availableWidth = max(140, panelSize.width - (metrics.panelContentInset * 2))
+        let availableHeight = max(80, panelSize.height - estimatedHeaderHeight)
+        let rowSpacing: CGFloat = 6
+        let minRowHeight: CGFloat = 34
+        let maxVisibleRows = max(1, Int((availableHeight + rowSpacing) / (minRowHeight + rowSpacing)))
+        let preferredColumns = max(1, Int(ceil(Double(max(widgetModel.items.count, 1)) / Double(maxVisibleRows))))
+        let columnCount = min(preferredColumns, max(1, Int((availableWidth + 12) / 180)))
+        let listColumns = Array(
+            repeating: GridItem(.flexible(minimum: 120, maximum: .infinity), spacing: rowSpacing),
+            count: max(1, columnCount)
+        )
+        let rowsPerColumn = max(1, Int(ceil(Double(max(widgetModel.items.count, 1)) / Double(max(1, columnCount)))))
+        let resolvedRowHeight = max(
+            minRowHeight,
+            min(54, (availableHeight - (CGFloat(max(rowsPerColumn - 1, 0)) * rowSpacing)) / CGFloat(rowsPerColumn))
+        )
+        let effectiveColumnWidth = (availableWidth - (CGFloat(max(columnCount - 1, 0)) * rowSpacing)) / CGFloat(max(1, columnCount))
+        let compactWidth = effectiveColumnWidth < 210
+        let roomyWidth = effectiveColumnWidth > 280
+        let listMetrics = WidgetListLayoutMetrics(
+            rowHeight: resolvedRowHeight,
+            horizontalPadding: compactWidth ? 8 : 10,
+            spacing: compactWidth ? 8 : 10,
+            artworkSide: max(18, min(compactWidth ? 34 : 42, resolvedRowHeight - (compactWidth ? 12 : 8))),
+            titleFontSize: compactWidth ? 11 : 12,
+            subtitleFontSize: compactWidth ? 9 : 10,
+            showsSubtitle: !compactWidth || resolvedRowHeight >= 44,
+            cornerRadius: roomyWidth ? 12 : 10
+        )
+
+        return LazyVGrid(columns: listColumns, alignment: .leading, spacing: rowSpacing) {
+            ForEach(widgetModel.items) { item in
+                makeListRow(item: item, metrics: listMetrics)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func makeListRow(item: WidgetItem, metrics: WidgetListLayoutMetrics) -> some View {
+        let baseRow = WidgetListItemRow(
+            item: item,
+            metrics: metrics,
+            isSelected: widgetModel.selectedItemID == item.id,
+            removalStyle: isEditing ? .remove : .unpin,
+            showsRemoveButton: isEditing || hoveredItemID == item.id,
+            onRemove: { onRemoveItem(item) }
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onHover { isHovering in
+            if isHovering {
+                hoveredItemID = item.id
+            } else if hoveredItemID == item.id {
+                hoveredItemID = nil
+            }
+        }
+        .contextMenu {
+            if !isEditing {
+                Button("Open") {
+                    onOpen(item)
+                }
+            }
+
+            Button("Reveal in Finder") {
+                onRevealInFinder(item)
+            }
+
+            Divider()
+
+            Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
+                onRemoveItem(item)
+            }
+        }
+
+        if isEditing {
+            baseRow
+        } else {
+            baseRow
+                .onTapGesture {
+                    onSelect(item)
+                }
+                .onTapGesture(count: 2) {
+                    onOpen(item)
+                }
+        }
+    }
+
+    private func sizeField(title: String, text: Binding<String>, field: SizeField) -> some View {
+        HStack(spacing: 4) {
+            ArrowStepperTextField(
+                placeholder: title,
+                text: text,
+                onArrowStep: { delta in
+                    stepSizeField(field, delta: delta)
+                },
+                onSubmit: {
+                    applyDraftSize()
+                },
+                onFocusChanged: { isFocused in
+                    focusedField = isFocused ? field : nil
+                }
+            )
+                .frame(width: 44)
+                .onChange(of: text.wrappedValue) { _, _ in
+                    applyDraftSize()
+                }
+
+            VStack(spacing: 2) {
+                stepperButton(systemName: "chevron.up", field: field, delta: 1)
+                stepperButton(systemName: "chevron.down", field: field, delta: -1)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func stepperButton(systemName: String, field: SizeField, delta: Int) -> some View {
+        Button {
+            stepSizeField(field, delta: delta)
+            applyDraftSize()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 7, weight: .bold))
+                .frame(width: 12, height: 8)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
     }
 
     private var parsedDraftWidth: CGFloat? {
@@ -285,7 +493,33 @@ struct WidgetPanelView: View {
         }
 
         focusedField = nil
-        onApplyPanelSize(CGSize(width: width, height: height))
+        let resolvedSize: CGSize
+        switch sizeInputMode {
+        case .pixels:
+            resolvedSize = CGSize(width: width, height: height)
+        case .cells:
+            resolvedSize = CGSize(
+                width: width * metrics.desktopCellSize.width,
+                height: height * metrics.desktopCellSize.height
+            )
+        }
+        onApplyPanelSize(resolvedSize)
+    }
+
+    private var parsedDraftOpacity: Double? {
+        guard let parsed = Double(draftOpacity.trimmingCharacters(in: .whitespacesAndNewlines)),
+              parsed.isFinite else {
+            return nil
+        }
+
+        return min(max(parsed, 0), 100)
+    }
+
+    private func applyDraftOpacity() {
+        guard let parsedDraftOpacity else { return }
+        let normalized = parsedDraftOpacity / 100
+        draftBackgroundOpacity = normalized
+        onBackgroundOpacityChange(normalized)
     }
 
     private func parseDimension(_ value: String) -> CGFloat? {
@@ -298,15 +532,39 @@ struct WidgetPanelView: View {
         return CGFloat(parsed)
     }
 
+    private func stepSizeField(_ field: SizeField, delta: Int) {
+        let minimumValue: Int = 1
+        switch field {
+        case .width:
+            let currentValue = max(minimumValue, Int((Double(draftWidth) ?? 0).rounded()))
+            draftWidth = String(max(minimumValue, currentValue + delta))
+        case .height:
+            let currentValue = max(minimumValue, Int((Double(draftHeight) ?? 0).rounded()))
+            draftHeight = String(max(minimumValue, currentValue + delta))
+        case .opacity:
+            let currentValue = Int((Double(draftOpacity) ?? Double(Int((draftBackgroundOpacity * 100).rounded()))).rounded())
+            draftOpacity = String(min(100, max(0, currentValue + delta)))
+        }
+    }
+
     private func syncEditorStateFromModel() {
         draftTitle = widgetModel.title
         draftBackgroundOpacity = widgetModel.backgroundOpacity
+        draftOpacity = String(Int((widgetModel.backgroundOpacity * 100).rounded()))
         syncSizeDraft(from: widgetModel.panelSize)
     }
 
     private func syncSizeDraft(from size: CGSize) {
-        draftWidth = String(Int(size.width.rounded()))
-        draftHeight = String(Int(size.height.rounded()))
+        switch sizeInputMode {
+        case .pixels:
+            draftWidth = String(Int(size.width.rounded()))
+            draftHeight = String(Int(size.height.rounded()))
+        case .cells:
+            let columns = max(1, Int((size.width / metrics.desktopCellSize.width).rounded()))
+            let rows = max(1, Int((size.height / metrics.desktopCellSize.height).rounded()))
+            draftWidth = String(columns)
+            draftHeight = String(rows)
+        }
     }
 
     private func resolvedPanelSize(from liveSize: CGSize) -> CGSize {
@@ -350,6 +608,111 @@ struct WidgetPanelView: View {
     }
 }
 
+private struct WidgetListLayoutMetrics {
+    let rowHeight: CGFloat
+    let horizontalPadding: CGFloat
+    let spacing: CGFloat
+    let artworkSide: CGFloat
+    let titleFontSize: CGFloat
+    let subtitleFontSize: CGFloat
+    let showsSubtitle: Bool
+    let cornerRadius: CGFloat
+}
+
+private struct ArrowStepperTextField: NSViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+    let onArrowStep: (Int) -> Void
+    let onSubmit: () -> Void
+    let onFocusChanged: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = ArrowKeyAwareTextField()
+        textField.delegate = context.coordinator
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.isBezeled = false
+        textField.focusRingType = .none
+        textField.alignment = .center
+        textField.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        textField.placeholderString = placeholder
+        textField.stringValue = text
+        textField.onArrowStep = onArrowStep
+        textField.onSubmit = onSubmit
+        textField.onFocusChanged = onFocusChanged
+        return textField
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+        nsView.placeholderString = placeholder
+        if let textField = nsView as? ArrowKeyAwareTextField {
+            textField.onArrowStep = onArrowStep
+            textField.onSubmit = onSubmit
+            textField.onFocusChanged = onFocusChanged
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private let parent: ArrowStepperTextField
+
+        init(_ parent: ArrowStepperTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+    }
+}
+
+private final class ArrowKeyAwareTextField: NSTextField {
+    var onArrowStep: ((Int) -> Void)?
+    var onSubmit: (() -> Void)?
+    var onFocusChanged: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            onFocusChanged?(true)
+        }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted {
+            onFocusChanged?(false)
+        }
+        return accepted
+    }
+
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        onFocusChanged?(false)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 126:
+            onArrowStep?(1)
+        case 125:
+            onArrowStep?(-1)
+        case 36, 76:
+            onSubmit?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+}
+
 private struct EmptyWidgetDropZone: View {
     let isEditing: Bool
     let isDropTargeted: Bool
@@ -377,7 +740,7 @@ private struct EmptyWidgetDropZone: View {
                     }
 
                     Text(isEditing
-                        ? "Drag to move. Size and opacity are above."
+                        ? "Move the widget. Size and opacity are above."
                         : "Create an empty widget, then drag items from Finder to pin them here.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -449,6 +812,56 @@ private struct WidgetItemCell: View {
             if showsRemoveButton {
                 RemoveItemButton(style: removalStyle, action: onRemove)
                     .padding(4)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: showsRemoveButton)
+    }
+}
+
+private struct WidgetListItemRow: View {
+    let item: WidgetItem
+    let metrics: WidgetListLayoutMetrics
+    let isSelected: Bool
+    let removalStyle: WidgetItemCell.RemovalStyle
+    let showsRemoveButton: Bool
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: metrics.spacing) {
+            WidgetListArtwork(item: item, side: metrics.artworkSide, isSelected: isSelected)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.title)
+                    .font(.system(size: metrics.titleFontSize, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if metrics.showsSubtitle {
+                    Text(item.subtitle)
+                        .font(.system(size: metrics.subtitleFontSize))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, metrics.horizontalPadding)
+        .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
+                .fill(isSelected ? .white.opacity(0.16) : .white.opacity(0.08))
+                .overlay {
+                    RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
+                        .strokeBorder(isSelected ? .white.opacity(0.35) : .clear, lineWidth: 1)
+                }
+        )
+        .overlay(alignment: .trailing) {
+            if showsRemoveButton {
+                RemoveItemButton(style: removalStyle, action: onRemove)
+                    .padding(.trailing, 6)
                     .transition(.scale.combined(with: .opacity))
             }
         }
@@ -560,6 +973,55 @@ private struct WidgetItemArtwork: View {
         let containerHeight = metrics.iconContainerHeight(for: itemSize)
         let side = min(itemSize.width, containerHeight)
         return CGSize(width: side, height: side)
+    }
+}
+
+private struct WidgetListArtwork: View {
+    @StateObject private var artworkLoader: WidgetArtworkLoader
+
+    let item: WidgetItem
+    let side: CGFloat
+    let isSelected: Bool
+
+    init(item: WidgetItem, side: CGFloat, isSelected: Bool) {
+        self.item = item
+        self.side = side
+        self.isSelected = isSelected
+        _artworkLoader = StateObject(
+            wrappedValue: WidgetArtworkLoader(url: item.url, prefersImagePreview: item.isImage)
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? .white.opacity(0.18) : .white.opacity(0.10))
+
+            if let artwork = artworkLoader.artwork {
+                if artworkLoader.displaysImagePreview {
+                    Image(nsImage: artwork)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: side, height: side)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    Image(nsImage: artwork)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: side, height: side)
+                }
+            } else {
+                Image(systemName: item.kind == .folder ? "folder.fill" : "doc.fill")
+                    .font(.system(size: max(14, side * 0.54), weight: .medium))
+                    .foregroundStyle(item.kind == .folder ? .yellow : .white)
+                    .frame(width: side, height: side)
+            }
+        }
+        .frame(width: side, height: side)
+        .task(id: item.url) {
+            artworkLoader.loadIfNeeded()
+        }
     }
 }
 

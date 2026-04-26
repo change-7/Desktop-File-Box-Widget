@@ -12,6 +12,7 @@ enum WidgetSnapMode {
 
 struct SnapGridEngine {
     private let metrics = WidgetGridMetrics()
+    private let blockedOverlapTolerance: CGFloat = 10
 
     func resolveFrame(
         for proposedFrame: CGRect,
@@ -170,7 +171,8 @@ struct SnapGridEngine {
     }
 
     private func isValid(_ frame: CGRect, occupied: [WidgetFrameSnapshot], blockedFrames: [CGRect]) -> Bool {
-        guard !blockedFrames.contains(where: { $0.intersects(frame) }) else {
+        let effectiveFrame = frame.insetBy(dx: blockedOverlapTolerance, dy: blockedOverlapTolerance)
+        guard !blockedFrames.contains(where: { $0.intersects(effectiveFrame) }) else {
             return false
         }
 

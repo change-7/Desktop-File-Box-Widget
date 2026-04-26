@@ -31,7 +31,7 @@ struct MenuBarContentView: View {
 
             Divider()
 
-            Button("Quit Desktop File Box Widget") {
+            Button("Quit File Tray") {
                 NSApp.terminate(nil)
             }
         }

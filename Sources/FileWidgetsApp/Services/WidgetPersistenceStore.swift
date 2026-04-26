@@ -39,6 +39,7 @@ final class WidgetPersistenceStore {
                         height: snapshot.panelHeight
                     ),
                     backgroundOpacity: snapshot.backgroundOpacity,
+                    displayMode: snapshot.displayMode,
                     items: snapshot.items.compactMap(loadItem(from:)),
                     frame: snapshot.frame.map {
                         CGRect(
@@ -67,6 +68,7 @@ final class WidgetPersistenceStore {
                     panelWidth: widget.panelSize.width,
                     panelHeight: widget.panelSize.height,
                     backgroundOpacity: widget.backgroundOpacity,
+                    displayMode: widget.displayMode,
                     items: widget.items.map(makePersistedItem(from:)),
                     frame: widget.frame.map {
                         PersistedRect(
@@ -176,6 +178,7 @@ private struct PersistedWidget: Codable {
     let panelWidth: CGFloat
     let panelHeight: CGFloat
     let backgroundOpacity: Double
+    let displayMode: WidgetDisplayMode
     let items: [PersistedWidgetItem]
     let frame: PersistedRect?
 
@@ -185,6 +188,7 @@ private struct PersistedWidget: Codable {
         case panelWidth
         case panelHeight
         case backgroundOpacity
+        case displayMode
         case items
         case itemPaths
         case frame
@@ -196,6 +200,7 @@ private struct PersistedWidget: Codable {
         panelWidth: CGFloat,
         panelHeight: CGFloat,
         backgroundOpacity: Double,
+        displayMode: WidgetDisplayMode,
         items: [PersistedWidgetItem],
         frame: PersistedRect?
     ) {
@@ -204,6 +209,7 @@ private struct PersistedWidget: Codable {
         self.panelWidth = panelWidth
         self.panelHeight = panelHeight
         self.backgroundOpacity = backgroundOpacity
+        self.displayMode = displayMode
         self.items = items
         self.frame = frame
     }
@@ -215,6 +221,7 @@ private struct PersistedWidget: Codable {
         panelWidth = try container.decode(CGFloat.self, forKey: .panelWidth)
         panelHeight = try container.decode(CGFloat.self, forKey: .panelHeight)
         backgroundOpacity = try container.decode(Double.self, forKey: .backgroundOpacity)
+        displayMode = try container.decodeIfPresent(WidgetDisplayMode.self, forKey: .displayMode) ?? .grid
         frame = try container.decodeIfPresent(PersistedRect.self, forKey: .frame)
         items = try container.decodeIfPresent([PersistedWidgetItem].self, forKey: .items)
             ?? (try container.decodeIfPresent([String].self, forKey: .itemPaths) ?? []).map {
@@ -229,6 +236,7 @@ private struct PersistedWidget: Codable {
         try container.encode(panelWidth, forKey: .panelWidth)
         try container.encode(panelHeight, forKey: .panelHeight)
         try container.encode(backgroundOpacity, forKey: .backgroundOpacity)
+        try container.encode(displayMode, forKey: .displayMode)
         try container.encode(items, forKey: .items)
         try container.encodeIfPresent(frame, forKey: .frame)
     }

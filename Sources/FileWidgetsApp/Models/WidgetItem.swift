@@ -3,6 +3,11 @@ import CoreGraphics
 import Foundation
 import UniformTypeIdentifiers
 
+enum WidgetDisplayMode: String, Codable {
+    case grid
+    case list
+}
+
 struct WidgetItem: Identifiable, Hashable {
     enum Kind: String {
         case file
@@ -79,6 +84,7 @@ final class WidgetModel: ObservableObject, Identifiable {
     @Published var title: String
     @Published var panelSize: CGSize
     @Published var backgroundOpacity: Double
+    @Published var displayMode: WidgetDisplayMode
     @Published var items: [WidgetItem]
     @Published var frame: CGRect?
     @Published var selectedItemID: WidgetItem.ID?
@@ -88,6 +94,7 @@ final class WidgetModel: ObservableObject, Identifiable {
         title: String,
         panelSize: CGSize,
         backgroundOpacity: Double = 0.78,
+        displayMode: WidgetDisplayMode = .grid,
         items: [WidgetItem],
         frame: CGRect? = nil
     ) {
@@ -95,6 +102,7 @@ final class WidgetModel: ObservableObject, Identifiable {
         self.title = title
         self.panelSize = panelSize
         self.backgroundOpacity = backgroundOpacity
+        self.displayMode = displayMode
         self.items = items
         self.frame = frame
         self.selectedItemID = nil

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname "$0")"/.. && pwd)"
 PRODUCT_NAME="FileWidgetsApp"
 HELPER_NAME="VisibilityGuardian"
-APP_NAME="Desktop File Box Widget"
+APP_NAME="File Tray"
 BUILD_CONFIGURATION="${1:-debug}"
 BUILD_ROOT="$ROOT_DIR/.build/arm64-apple-macosx/$BUILD_CONFIGURATION"
 EXECUTABLE_PATH="$BUILD_ROOT/$PRODUCT_NAME"

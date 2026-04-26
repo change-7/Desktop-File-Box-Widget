@@ -133,6 +133,8 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         WidgetPanelView(
             widgetModel: widgetModel,
             isEditing: isEditing,
+            onToggleEditLayout: toggleEditLayout,
+            onSetDisplayMode: setDisplayMode,
             onSelect: selectItem,
             onOpen: openItem,
             onRevealInFinder: revealInFinder,
@@ -142,6 +144,16 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
             onBackgroundOpacityChange: updateBackgroundOpacity,
             onDropItems: addDroppedItems
         )
+    }
+
+    private func toggleEditLayout() {
+        surfaceManager.toggleEditMode()
+    }
+
+    private func setDisplayMode(_ displayMode: WidgetDisplayMode) {
+        guard widgetModel.displayMode != displayMode else { return }
+        widgetModel.displayMode = displayMode
+        surfaceManager.widgetAppearanceDidChange()
     }
 
     private func openItem(_ item: WidgetItem) {
@@ -319,14 +331,19 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
     private func moveSelection(_ direction: SelectionDirection) {
         guard widgetModel.items.isEmpty == false else { return }
 
-        let itemLayout = gridMetrics.itemLayout(
-            for: widgetModel.panelSize,
-            itemCount: widgetModel.items.count,
-            isEditing: false
-        )
         let itemCount = widgetModel.items.count
         let lastIndex = itemCount - 1
-        let columns = max(itemLayout.columns, 1)
+        let columns: Int
+        if widgetModel.displayMode == .list {
+            columns = 1
+        } else {
+            let itemLayout = gridMetrics.itemLayout(
+                for: widgetModel.panelSize,
+                itemCount: itemCount,
+                isEditing: false
+            )
+            columns = max(itemLayout.columns, 1)
+        }
         let currentIndex = widgetModel.selectedItemID.flatMap { selectedID in
             widgetModel.items.firstIndex(where: { $0.id == selectedID })
         }
