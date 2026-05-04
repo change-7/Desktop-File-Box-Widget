@@ -6,9 +6,15 @@ File Tray is a macOS desktop utility: widgets for your desktop files. It lets yo
 
 - Creates desktop widgets that live above the desktop icon layer
 - Lets you drag files and folders from Finder into each widget
+- Lets you drag tray items out to apps or browser upload areas for file attachments
+- Lets you tune temporary attachment export retention for hidden Desktop items
 - Opens pinned items with a double click
 - Supports keyboard selection, arrow-key navigation, and Quick Look with `Space`
+- Collects new Desktop screenshots into an automatic Screenshots tray
+- Copies all screenshots from the Screenshots tray and moves them to Trash when they are no longer needed
+- Optionally organizes new Desktop files into file-type trays with custom extension rules
 - Hides pinned Desktop items while the app is running and restores them when the app exits
+- Provides a Control Center safety action to pause hiding and immediately show hidden Desktop files
 - Recovers hidden Desktop items after an interrupted session
 - Persists widget titles, positions, sizes, opacity, and pinned items between launches
 
@@ -37,17 +43,25 @@ The packaged app is created at:
 dist/File Tray.app
 ```
 
+### Run tests
+
+```bash
+swift test
+```
+
 ## Usage
 
 1. Launch `File Tray.app`
 2. Create or select a widget from the menu bar
 3. Drag files or folders from Finder into a widget
 4. Double click an item to open it
-5. Click once to select an item, then use:
+5. Drag an item from a widget to an app or browser upload area to attach it
+6. Click once to select an item, then use:
    - `Arrow keys` to move selection
    - `Space` to toggle Quick Look
    - `Return` to open the selected item
-6. Toggle edit mode to rename widgets, change opacity, move widgets, and enter widget size values
+7. Toggle edit mode to rename widgets, change opacity, move widgets, and enter widget size values
+8. Use the Control Center automation settings to enable file-type trays and add custom extension rules
 
 ## Release Asset
 
@@ -59,6 +73,7 @@ The first GitHub release is tagged as `v0.1.0`.
 Sources/FileWidgetsApp        Main macOS app target
 Sources/FileWidgetsSupport    Shared support code for desktop visibility state
 Sources/VisibilityGuardian    Helper process that restores hidden Desktop items after abnormal termination
+Tests/FileWidgetsSupportTests Visibility-state compatibility tests
 Scripts/build-app.sh          App bundle packaging script
 ```
 

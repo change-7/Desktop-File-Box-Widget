@@ -11,7 +11,11 @@ struct WidgetPanelView: View {
     let onOpen: (WidgetItem) -> Void
     let onRevealInFinder: (WidgetItem) -> Void
     let onRemoveItem: (WidgetItem) -> Void
+    let onCopyAllItems: () -> Void
+    let onMoveItemToTrash: (WidgetItem) -> Void
+    let onMoveAllItemsToTrash: () -> Void
     let onApplyPanelSize: (CGSize) -> Void
+    let onResizeDragActiveChange: (Bool) -> Void
     let onRename: (String) -> Void
     let onBackgroundOpacityChange: (Double) -> Void
     let onDropItems: ([URL]) -> Void
@@ -25,6 +29,7 @@ struct WidgetPanelView: View {
     @State private var draftWidth = ""
     @State private var draftHeight = ""
     @State private var sizeInputMode: SizeInputMode = .pixels
+    @State private var resizeStartSize: CGSize?
     @FocusState private var focusedField: SizeField?
 
     private enum SizeField {
@@ -103,19 +108,21 @@ struct WidgetPanelView: View {
                         EmptyWidgetDropZone(isEditing: isEditing, isDropTargeted: isDropTargeted)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     } else {
-                        if widgetModel.displayMode == .list {
-                            listContent(panelSize: panelSize)
-                        } else {
-                            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: metrics.itemSpacing) {
-                                ForEach(widgetModel.items) { item in
-                                    makeItemCell(item: item, itemSize: itemLayout.itemSize)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        }
+                        itemContent(
+                            panelSize: panelSize,
+                            gridColumns: gridColumns,
+                            itemLayout: itemLayout
+                        )
                     }
                 }
                 .padding(metrics.panelContentInset)
+
+                if isEditing {
+                    ResizeHandle()
+                        .padding(metrics.outerPadding + 8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .gesture(resizeGesture(currentSize: panelSize))
+                }
             }
             .contentShape(RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous))
             .contextMenu {
@@ -130,6 +137,19 @@ struct WidgetPanelView: View {
 
                     Button("List") {
                         onSetDisplayMode(.list)
+                    }
+                }
+
+                if widgetModel.trayKind.isScreenshots,
+                   widgetModel.items.isEmpty == false {
+                    Divider()
+
+                    Button("Copy All Screenshots") {
+                        onCopyAllItems()
+                    }
+
+                    Button("Move All Screenshots to Trash") {
+                        onMoveAllItemsToTrash()
                     }
                 }
             }
@@ -181,6 +201,30 @@ struct WidgetPanelView: View {
         )
     }
 
+    private func resizeGesture(currentSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                if resizeStartSize == nil {
+                    resizeStartSize = currentSize
+                    focusedField = nil
+                    onResizeDragActiveChange(true)
+                }
+
+                guard let resizeStartSize else { return }
+                onApplyPanelSize(
+                    CGSize(
+                        width: resizeStartSize.width + value.translation.width,
+                        height: resizeStartSize.height + value.translation.height
+                    )
+                )
+            }
+            .onEnded { _ in
+                resizeStartSize = nil
+                onResizeDragActiveChange(false)
+                syncSizeDraft(from: widgetModel.panelSize)
+            }
+    }
+
     private func header(panelSize: CGSize) -> some View {
         let usesCompactEditorHeader = panelSize.width < 470
 
@@ -189,11 +233,8 @@ struct WidgetPanelView: View {
                 if usesCompactEditorHeader {
                     VStack(alignment: .leading, spacing: 6) {
                         titleField
-
-                        HStack(alignment: .center, spacing: 8) {
-                            sizeModePicker
-                            sizeEditor
-                        }
+                        sizeModePicker
+                        sizeEditor
                     }
                 } else {
                     HStack(alignment: .center, spacing: 8) {
@@ -212,8 +253,34 @@ struct WidgetPanelView: View {
                     opacityField
                 }
             } else {
-                Text(widgetModel.title)
-                    .font(.headline.weight(.semibold))
+                HStack(spacing: 8) {
+                    Text(widgetModel.title)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    if widgetModel.trayKind.isScreenshots,
+                       widgetModel.items.isEmpty == false {
+                        Button {
+                            onCopyAllItems()
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy All Screenshots")
+
+                        Button {
+                            onMoveAllItemsToTrash()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Move All Screenshots to Trash")
+                    }
+                }
             }
         }
         .frame(minHeight: metrics.titleAreaHeight, alignment: .top)
@@ -325,6 +392,14 @@ struct WidgetPanelView: View {
 
             Divider()
 
+            if widgetModel.trayKind.isScreenshots {
+                Button("Move to Trash") {
+                    onMoveItemToTrash(item)
+                }
+
+                Divider()
+            }
+
             Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
                 onRemoveItem(item)
             }
@@ -334,35 +409,66 @@ struct WidgetPanelView: View {
             baseCell
         } else {
             baseCell
-                .onTapGesture {
-                    onSelect(item)
-                }
-                .onTapGesture(count: 2) {
-                    onOpen(item)
+                .overlay {
+                    FileAttachmentDragLayer(
+                        item: item,
+                        showsRemoveButton: hoveredItemID == item.id,
+                        isScreenshotTray: widgetModel.trayKind.isScreenshots,
+                        onHoverChanged: { isHovering in
+                            if isHovering {
+                                hoveredItemID = item.id
+                            } else if hoveredItemID == item.id {
+                                hoveredItemID = nil
+                            }
+                        },
+                        onSelect: { onSelect(item) },
+                        onOpen: { onOpen(item) },
+                        onRevealInFinder: { onRevealInFinder(item) },
+                        onRemove: { onRemoveItem(item) },
+                        onMoveToTrash: { onMoveItemToTrash(item) }
+                    )
                 }
         }
     }
 
+    private func itemContent(
+        panelSize: CGSize,
+        gridColumns: [GridItem],
+        itemLayout: WidgetItemLayout
+    ) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            Group {
+                if widgetModel.displayMode == .list {
+                    listContent(panelSize: panelSize)
+                } else {
+                    LazyVGrid(columns: gridColumns, alignment: .leading, spacing: metrics.itemSpacing) {
+                        ForEach(widgetModel.items) { item in
+                            makeItemCell(item: item, itemSize: itemLayout.itemSize)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            }
+            .padding(.trailing, isEditing ? 34 : 0)
+            .padding(.bottom, isEditing ? 34 : 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     private func listContent(panelSize: CGSize) -> some View {
-        let estimatedHeaderHeight = isEditing
-            ? metrics.titleAreaHeight + metrics.headerEditorHeight + metrics.sliderSectionHeight + 18
-            : metrics.titleAreaHeight + 6
-        let availableWidth = max(140, panelSize.width - (metrics.panelContentInset * 2))
-        let availableHeight = max(80, panelSize.height - estimatedHeaderHeight)
+        let layout = metrics.listLayout(
+            for: panelSize,
+            itemCount: widgetModel.items.count,
+            isEditing: isEditing
+        )
+        let availableWidth = layout.availableWidth
         let rowSpacing: CGFloat = 6
-        let minRowHeight: CGFloat = 34
-        let maxVisibleRows = max(1, Int((availableHeight + rowSpacing) / (minRowHeight + rowSpacing)))
-        let preferredColumns = max(1, Int(ceil(Double(max(widgetModel.items.count, 1)) / Double(maxVisibleRows))))
-        let columnCount = min(preferredColumns, max(1, Int((availableWidth + 12) / 180)))
+        let columnCount = layout.columns
         let listColumns = Array(
             repeating: GridItem(.flexible(minimum: 120, maximum: .infinity), spacing: rowSpacing),
             count: max(1, columnCount)
         )
-        let rowsPerColumn = max(1, Int(ceil(Double(max(widgetModel.items.count, 1)) / Double(max(1, columnCount)))))
-        let resolvedRowHeight = max(
-            minRowHeight,
-            min(54, (availableHeight - (CGFloat(max(rowsPerColumn - 1, 0)) * rowSpacing)) / CGFloat(rowsPerColumn))
-        )
+        let resolvedRowHeight = layout.rowHeight
         let effectiveColumnWidth = (availableWidth - (CGFloat(max(columnCount - 1, 0)) * rowSpacing)) / CGFloat(max(1, columnCount))
         let compactWidth = effectiveColumnWidth < 210
         let roomyWidth = effectiveColumnWidth > 280
@@ -382,7 +488,7 @@ struct WidgetPanelView: View {
                 makeListRow(item: item, metrics: listMetrics)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -416,6 +522,14 @@ struct WidgetPanelView: View {
 
             Divider()
 
+            if widgetModel.trayKind.isScreenshots {
+                Button("Move to Trash") {
+                    onMoveItemToTrash(item)
+                }
+
+                Divider()
+            }
+
             Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
                 onRemoveItem(item)
             }
@@ -425,11 +539,24 @@ struct WidgetPanelView: View {
             baseRow
         } else {
             baseRow
-                .onTapGesture {
-                    onSelect(item)
-                }
-                .onTapGesture(count: 2) {
-                    onOpen(item)
+                .overlay {
+                    FileAttachmentDragLayer(
+                        item: item,
+                        showsRemoveButton: hoveredItemID == item.id,
+                        isScreenshotTray: widgetModel.trayKind.isScreenshots,
+                        onHoverChanged: { isHovering in
+                            if isHovering {
+                                hoveredItemID = item.id
+                            } else if hoveredItemID == item.id {
+                                hoveredItemID = nil
+                            }
+                        },
+                        onSelect: { onSelect(item) },
+                        onOpen: { onOpen(item) },
+                        onRevealInFinder: { onRevealInFinder(item) },
+                        onRemove: { onRemoveItem(item) },
+                        onMoveToTrash: { onMoveItemToTrash(item) }
+                    )
                 }
         }
     }
@@ -619,6 +746,26 @@ private struct WidgetListLayoutMetrics {
     let cornerRadius: CGFloat
 }
 
+private struct ResizeHandle: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.ultraThinMaterial.opacity(0.92))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                }
+
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.primary.opacity(0.86))
+        }
+        .frame(width: 28, height: 28)
+        .contentShape(Rectangle())
+        .help("Drag to resize")
+    }
+}
+
 private struct ArrowStepperTextField: NSViewRepresentable {
     let placeholder: String
     @Binding var text: String
@@ -749,6 +896,308 @@ private struct EmptyWidgetDropZone: View {
                 }
                 .padding(24)
             }
+    }
+}
+
+private struct FileAttachmentDragLayer: NSViewRepresentable {
+    let item: WidgetItem
+    let showsRemoveButton: Bool
+    let isScreenshotTray: Bool
+    let onHoverChanged: (Bool) -> Void
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    let onRevealInFinder: () -> Void
+    let onRemove: () -> Void
+    let onMoveToTrash: () -> Void
+
+    func makeNSView(context: Context) -> FileAttachmentDragSourceView {
+        let view = FileAttachmentDragSourceView()
+        view.update(
+            item: item,
+            showsRemoveButton: showsRemoveButton,
+            isScreenshotTray: isScreenshotTray,
+            onHoverChanged: onHoverChanged,
+            onSelect: onSelect,
+            onOpen: onOpen,
+            onRevealInFinder: onRevealInFinder,
+            onRemove: onRemove,
+            onMoveToTrash: onMoveToTrash
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: FileAttachmentDragSourceView, context: Context) {
+        nsView.update(
+            item: item,
+            showsRemoveButton: showsRemoveButton,
+            isScreenshotTray: isScreenshotTray,
+            onHoverChanged: onHoverChanged,
+            onSelect: onSelect,
+            onOpen: onOpen,
+            onRevealInFinder: onRevealInFinder,
+            onRemove: onRemove,
+            onMoveToTrash: onMoveToTrash
+        )
+    }
+}
+
+private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
+    private var item: WidgetItem?
+    private var showsRemoveButton = false
+    private var isScreenshotTray = false
+    private var onHoverChanged: ((Bool) -> Void)?
+    private var onSelect: (() -> Void)?
+    private var onOpen: (() -> Void)?
+    private var onRevealInFinder: (() -> Void)?
+    private var onRemove: (() -> Void)?
+    private var onMoveToTrash: (() -> Void)?
+    private var trackingArea: NSTrackingArea?
+    private var mouseDownWindowPoint: NSPoint?
+    private var mouseDownLocalPoint: NSPoint?
+    private var removeClickStarted = false
+    private var didStartDrag = false
+    private var activeExportURL: URL?
+
+    override var isFlipped: Bool { true }
+
+    func update(
+        item: WidgetItem,
+        showsRemoveButton: Bool,
+        isScreenshotTray: Bool,
+        onHoverChanged: @escaping (Bool) -> Void,
+        onSelect: @escaping () -> Void,
+        onOpen: @escaping () -> Void,
+        onRevealInFinder: @escaping () -> Void,
+        onRemove: @escaping () -> Void,
+        onMoveToTrash: @escaping () -> Void
+    ) {
+        self.item = item
+        self.showsRemoveButton = showsRemoveButton
+        self.isScreenshotTray = isScreenshotTray
+        self.onHoverChanged = onHoverChanged
+        self.onSelect = onSelect
+        self.onOpen = onOpen
+        self.onRevealInFinder = onRevealInFinder
+        self.onRemove = onRemove
+        self.onMoveToTrash = onMoveToTrash
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let newTrackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self
+        )
+        addTrackingArea(newTrackingArea)
+        trackingArea = newTrackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownWindowPoint = event.locationInWindow
+        mouseDownLocalPoint = convert(event.locationInWindow, from: nil)
+        removeClickStarted = mouseDownLocalPoint.map(isInsideRemoveButton) ?? false
+        didStartDrag = false
+
+        if removeClickStarted == false {
+            onSelect?()
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard removeClickStarted == false,
+              didStartDrag == false,
+              dragDistance(from: event) >= 4 else {
+            return
+        }
+
+        beginFileDrag(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer {
+            mouseDownWindowPoint = nil
+            mouseDownLocalPoint = nil
+            removeClickStarted = false
+            didStartDrag = false
+        }
+
+        guard didStartDrag == false else { return }
+
+        if removeClickStarted,
+           isInsideRemoveButton(convert(event.locationInWindow, from: nil)) {
+            onRemove?()
+            return
+        }
+
+        if event.clickCount >= 2 {
+            onOpen?()
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onSelect?()
+        NSMenu.popUpContextMenu(makeContextMenu(), with: event, for: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        .copy
+    }
+
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
+        true
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        if let activeExportURL {
+            FileDragExportService.shared.scheduleCleanup(for: activeExportURL)
+        }
+        activeExportURL = nil
+    }
+
+    private func beginFileDrag(with event: NSEvent) {
+        guard let item,
+              FileManager.default.fileExists(atPath: item.url.path) else {
+            return
+        }
+
+        didStartDrag = true
+        onSelect?()
+
+        let exportURL = FileDragExportService.shared.dragURL(for: item.url)
+        activeExportURL = exportURL
+
+        let draggingItem = NSDraggingItem(pasteboardWriter: exportURL as NSURL)
+        let localPoint = convert(event.locationInWindow, from: nil)
+        let previewSize = dragPreviewSize
+        let dragFrame = NSRect(
+            x: localPoint.x - (previewSize.width / 2),
+            y: localPoint.y - (previewSize.height / 2),
+            width: previewSize.width,
+            height: previewSize.height
+        )
+        draggingItem.setDraggingFrame(dragFrame, contents: dragImage(for: item, size: previewSize))
+
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = true
+    }
+
+    private func dragDistance(from event: NSEvent) -> CGFloat {
+        guard let mouseDownWindowPoint else { return 0 }
+        let currentPoint = event.locationInWindow
+        return hypot(currentPoint.x - mouseDownWindowPoint.x, currentPoint.y - mouseDownWindowPoint.y)
+    }
+
+    private func isInsideRemoveButton(_ point: NSPoint) -> Bool {
+        guard showsRemoveButton else { return false }
+        let buttonSize: CGFloat = 34
+        let rect = NSRect(
+            x: max(bounds.maxX - buttonSize, bounds.minX),
+            y: bounds.minY,
+            width: buttonSize,
+            height: buttonSize
+        )
+        return rect.contains(point)
+    }
+
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(menuItem("Open", action: #selector(performOpen)))
+        menu.addItem(menuItem("Reveal in Finder", action: #selector(performRevealInFinder)))
+        menu.addItem(.separator())
+
+        if isScreenshotTray {
+            menu.addItem(menuItem("Move to Trash", action: #selector(performMoveToTrash)))
+            menu.addItem(.separator())
+        }
+
+        menu.addItem(menuItem("Unpin from Widget", action: #selector(performRemove)))
+        return menu
+    }
+
+    private func menuItem(_ title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func performOpen() {
+        onOpen?()
+    }
+
+    @objc private func performRevealInFinder() {
+        onRevealInFinder?()
+    }
+
+    @objc private func performRemove() {
+        onRemove?()
+    }
+
+    @objc private func performMoveToTrash() {
+        onMoveToTrash?()
+    }
+
+    private var dragPreviewSize: NSSize {
+        let side = max(44, min(84, min(bounds.width, bounds.height)))
+        return NSSize(width: side, height: side)
+    }
+
+    private func dragImage(for item: WidgetItem, size: NSSize) -> NSImage {
+        let sourceImage: NSImage
+        if item.isImage,
+           let preview = NSImage(contentsOf: item.url) {
+            sourceImage = preview
+        } else {
+            sourceImage = NSWorkspace.shared.icon(forFile: item.url.path)
+        }
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        sourceImage.draw(
+            in: aspectFitRect(for: sourceImage.size, inside: NSRect(origin: .zero, size: size)),
+            from: NSRect(origin: .zero, size: sourceImage.size),
+            operation: .sourceOver,
+            fraction: 0.92
+        )
+        image.unlockFocus()
+        return image
+    }
+
+    private func aspectFitRect(for sourceSize: NSSize, inside targetRect: NSRect) -> NSRect {
+        guard sourceSize.width > 0,
+              sourceSize.height > 0 else {
+            return targetRect
+        }
+
+        let scale = min(targetRect.width / sourceSize.width, targetRect.height / sourceSize.height)
+        let fittedSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+        return NSRect(
+            x: targetRect.midX - (fittedSize.width / 2),
+            y: targetRect.midY - (fittedSize.height / 2),
+            width: fittedSize.width,
+            height: fittedSize.height
+        )
     }
 }
 

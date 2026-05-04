@@ -27,5 +27,10 @@ let package = Package(
             dependencies: ["FileWidgetsSupport"],
             path: "Sources/VisibilityGuardian"
         ),
+        .testTarget(
+            name: "FileWidgetsSupportTests",
+            dependencies: ["FileWidgetsSupport"],
+            path: "Tests/FileWidgetsSupportTests"
+        ),
     ]
 )

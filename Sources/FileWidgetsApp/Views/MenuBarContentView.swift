@@ -29,6 +29,14 @@ struct MenuBarContentView: View {
                 surfaceManager.toggleEditMode()
             }
 
+            Button(surfaceManager.isDesktopHidingPaused ? "Resume Desktop Hiding" : "Show Hidden Desktop Files") {
+                if surfaceManager.isDesktopHidingPaused {
+                    surfaceManager.resumeDesktopHiding()
+                } else {
+                    surfaceManager.pauseDesktopHidingAndRestoreItems()
+                }
+            }
+
             Divider()
 
             Button("Quit File Tray") {

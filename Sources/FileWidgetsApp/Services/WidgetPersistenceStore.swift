@@ -8,7 +8,7 @@ final class WidgetPersistenceStore {
 
     private let fileManager = FileManager.default
     private let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.desktopfileboxwidget.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.filetray.app",
         category: "WidgetPersistence"
     )
     private let storeURL: URL
@@ -40,6 +40,7 @@ final class WidgetPersistenceStore {
                     ),
                     backgroundOpacity: snapshot.backgroundOpacity,
                     displayMode: snapshot.displayMode,
+                    trayKind: snapshot.trayKind,
                     items: snapshot.items.compactMap(loadItem(from:)),
                     frame: snapshot.frame.map {
                         CGRect(
@@ -69,6 +70,7 @@ final class WidgetPersistenceStore {
                     panelHeight: widget.panelSize.height,
                     backgroundOpacity: widget.backgroundOpacity,
                     displayMode: widget.displayMode,
+                    trayKind: widget.trayKind,
                     items: widget.items.map(makePersistedItem(from:)),
                     frame: widget.frame.map {
                         PersistedRect(
@@ -179,6 +181,7 @@ private struct PersistedWidget: Codable {
     let panelHeight: CGFloat
     let backgroundOpacity: Double
     let displayMode: WidgetDisplayMode
+    let trayKind: WidgetTrayKind
     let items: [PersistedWidgetItem]
     let frame: PersistedRect?
 
@@ -189,6 +192,7 @@ private struct PersistedWidget: Codable {
         case panelHeight
         case backgroundOpacity
         case displayMode
+        case trayKind
         case items
         case itemPaths
         case frame
@@ -201,6 +205,7 @@ private struct PersistedWidget: Codable {
         panelHeight: CGFloat,
         backgroundOpacity: Double,
         displayMode: WidgetDisplayMode,
+        trayKind: WidgetTrayKind,
         items: [PersistedWidgetItem],
         frame: PersistedRect?
     ) {
@@ -210,6 +215,7 @@ private struct PersistedWidget: Codable {
         self.panelHeight = panelHeight
         self.backgroundOpacity = backgroundOpacity
         self.displayMode = displayMode
+        self.trayKind = trayKind
         self.items = items
         self.frame = frame
     }
@@ -222,6 +228,7 @@ private struct PersistedWidget: Codable {
         panelHeight = try container.decode(CGFloat.self, forKey: .panelHeight)
         backgroundOpacity = try container.decode(Double.self, forKey: .backgroundOpacity)
         displayMode = try container.decodeIfPresent(WidgetDisplayMode.self, forKey: .displayMode) ?? .grid
+        trayKind = try container.decodeIfPresent(WidgetTrayKind.self, forKey: .trayKind) ?? .manual
         frame = try container.decodeIfPresent(PersistedRect.self, forKey: .frame)
         items = try container.decodeIfPresent([PersistedWidgetItem].self, forKey: .items)
             ?? (try container.decodeIfPresent([String].self, forKey: .itemPaths) ?? []).map {
@@ -237,6 +244,7 @@ private struct PersistedWidget: Codable {
         try container.encode(panelHeight, forKey: .panelHeight)
         try container.encode(backgroundOpacity, forKey: .backgroundOpacity)
         try container.encode(displayMode, forKey: .displayMode)
+        try container.encode(trayKind, forKey: .trayKind)
         try container.encode(items, forKey: .items)
         try container.encodeIfPresent(frame, forKey: .frame)
     }

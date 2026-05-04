@@ -8,6 +8,7 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
     private unowned let surfaceManager: DesktopSurfaceManager
     private let widgetModel: WidgetModel
     private var isEditing = false
+    private var isResizeDragActive = false
     private var isApplyingFrameUpdate = false
     private var hostingView: NSHostingView<WidgetPanelView>?
     private let quickLookKeyMonitor = QuickLookKeyMonitorToken()
@@ -108,9 +109,10 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
 
     func updateEditMode(_ isEditing: Bool) {
         self.isEditing = isEditing
+        isResizeDragActive = false
         guard let window else { return }
 
-        window.isMovableByWindowBackground = isEditing
+        window.isMovableByWindowBackground = isEditing && !isResizeDragActive
         if isEditing {
             widgetModel.selectedItemID = nil
             closeQuickLookIfNeeded()
@@ -139,7 +141,11 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
             onOpen: openItem,
             onRevealInFinder: revealInFinder,
             onRemoveItem: removeItemFromWidget,
+            onCopyAllItems: copyAllItemsToPasteboard,
+            onMoveItemToTrash: moveItemToTrash,
+            onMoveAllItemsToTrash: moveAllItemsToTrash,
             onApplyPanelSize: updatePanelSize,
+            onResizeDragActiveChange: setResizeDragActive,
             onRename: updateTitle,
             onBackgroundOpacityChange: updateBackgroundOpacity,
             onDropItems: addDroppedItems
@@ -204,6 +210,86 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         surfaceManager.flushState()
     }
 
+    @discardableResult
+    func removeItems(where shouldRemove: (WidgetItem) -> Bool) -> Bool {
+        let removedItemIDs = Set(widgetModel.items.filter(shouldRemove).map(\.id))
+        guard removedItemIDs.isEmpty == false else { return false }
+
+        widgetModel.items.removeAll { removedItemIDs.contains($0.id) }
+        if let selectedItemID = widgetModel.selectedItemID,
+           removedItemIDs.contains(selectedItemID) {
+            widgetModel.selectedItemID = nil
+            closeQuickLookIfNeeded()
+        }
+        return true
+    }
+
+    private func copyAllItemsToPasteboard() {
+        let urls = widgetModel.items.map(\.url)
+        guard urls.isEmpty == false else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls as [NSURL])
+    }
+
+    private func moveItemToTrash(_ item: WidgetItem) {
+        moveItemsToTrash([item])
+    }
+
+    private func moveAllItemsToTrash() {
+        guard confirmMoveAllScreenshotsToTrash() else { return }
+        moveItemsToTrash(widgetModel.items)
+    }
+
+    private func confirmMoveAllScreenshotsToTrash() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Move all screenshots to Trash?"
+        alert.informativeText = "This will move the original files to the macOS Trash. When the tray becomes empty, File Tray removes it and will create a fresh Screenshots tray for the next screenshot."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func moveItemsToTrash(_ items: [WidgetItem]) {
+        guard widgetModel.trayKind.isScreenshots,
+              items.isEmpty == false else {
+            return
+        }
+
+        var removedItemIDs = Set<WidgetItem.ID>()
+        for item in items {
+            if FileManager.default.fileExists(atPath: item.url.path) == false {
+                removedItemIDs.insert(item.id)
+                continue
+            }
+
+            do {
+                var resultingURL: NSURL?
+                try FileManager.default.trashItem(at: item.url, resultingItemURL: &resultingURL)
+                removedItemIDs.insert(item.id)
+            } catch {
+                continue
+            }
+        }
+
+        guard removedItemIDs.isEmpty == false else { return }
+
+        widgetModel.items.removeAll { removedItemIDs.contains($0.id) }
+        if let selectedItemID = widgetModel.selectedItemID,
+           removedItemIDs.contains(selectedItemID) {
+            widgetModel.selectedItemID = nil
+            closeQuickLookIfNeeded()
+        }
+
+        if widgetModel.items.isEmpty {
+            surfaceManager.removeScreenshotTrayIfEmpty(widgetID)
+        } else {
+            surfaceManager.widgetContentDidChange()
+        }
+    }
+
     private func updateTitle(_ title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         widgetModel.title = trimmed.isEmpty ? "Untitled Widget" : trimmed
@@ -234,6 +320,11 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
             restoreOnFailure: true,
             commitToModel: true
         )
+    }
+
+    private func setResizeDragActive(_ isActive: Bool) {
+        isResizeDragActive = isActive
+        window?.isMovableByWindowBackground = isEditing && !isResizeDragActive
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
@@ -335,7 +426,14 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         let lastIndex = itemCount - 1
         let columns: Int
         if widgetModel.displayMode == .list {
-            columns = 1
+            columns = max(
+                gridMetrics.listLayout(
+                    for: widgetModel.panelSize,
+                    itemCount: itemCount,
+                    isEditing: false
+                ).columns,
+                1
+            )
         } else {
             let itemLayout = gridMetrics.itemLayout(
                 for: widgetModel.panelSize,

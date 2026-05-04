@@ -5,6 +5,13 @@ struct WidgetItemLayout {
     let itemSize: CGSize
 }
 
+struct WidgetListLayout {
+    let columns: Int
+    let rowHeight: CGFloat
+    let availableWidth: CGFloat
+    let availableHeight: CGFloat
+}
+
 struct WidgetGridMetrics {
     let defaultPanelSize = CGSize(width: 420, height: 240)
     let minimumPanelSize = CGSize(width: 250, height: 170)
@@ -85,8 +92,8 @@ struct WidgetGridMetrics {
                 bestScore = score
                 bestColumns = columns
                 bestSize = CGSize(
-                    width: max(candidateWidth, 28),
-                    height: max(candidateHeight, 36)
+                    width: max(candidateWidth, minimumItemWidth),
+                    height: max(candidateHeight, minimumItemHeight)
                 )
             }
         }
@@ -94,6 +101,29 @@ struct WidgetGridMetrics {
         return WidgetItemLayout(
             columns: bestColumns,
             itemSize: bestSize
+        )
+    }
+
+    func listLayout(for panelSize: CGSize, itemCount: Int, isEditing: Bool) -> WidgetListLayout {
+        let clampedSize = clampedPanelSize(panelSize)
+        let availableWidth = max(140, clampedSize.width - (panelContentInset * 2))
+        let availableHeight = max(80, clampedSize.height - estimatedHeaderHeight(isEditing: isEditing))
+        let rowSpacing: CGFloat = 6
+        let minRowHeight: CGFloat = 34
+        let maxVisibleRows = max(1, Int((availableHeight + rowSpacing) / (minRowHeight + rowSpacing)))
+        let preferredColumns = max(1, Int(ceil(Double(max(itemCount, 1)) / Double(maxVisibleRows))))
+        let columnCount = min(preferredColumns, max(1, Int((availableWidth + 12) / 180)))
+        let rows = max(1, Int(ceil(Double(max(itemCount, 1)) / Double(max(1, columnCount)))))
+        let rowHeight = max(
+            minRowHeight,
+            min(54, (availableHeight - (CGFloat(max(rows - 1, 0)) * rowSpacing)) / CGFloat(rows))
+        )
+
+        return WidgetListLayout(
+            columns: columnCount,
+            rowHeight: rowHeight,
+            availableWidth: availableWidth,
+            availableHeight: availableHeight
         )
     }
 

@@ -23,7 +23,10 @@ struct VisibilityGuardian {
             return
         }
 
-        DesktopVisibilitySupport.restoreManagedEntries(state.managedEntries)
+        DesktopVisibilitySupport.restoreManagedEntries(
+            state.managedEntries,
+            fileIdentities: state.managedFileIdentities
+        )
         state = DesktopVisibilityState()
         try? stateStore.save(state)
     }
