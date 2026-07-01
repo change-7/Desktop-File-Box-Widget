@@ -8,35 +8,42 @@ struct ControlCenterView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("File Tray")
+                Text(L10n.appName)
                     .font(.title2.weight(.semibold))
 
-                Text("Widgets for your desktop files, with movable file panels, Quick Look, and direct unpin controls.")
+                Text(L10n.controlCenterDescription)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 12) {
-                    Button("Create Empty Widget") {
+                    Button(L10n.createEmptyWidget) {
                         surfaceManager.createEmptyWidget()
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button(surfaceManager.isEditing ? "Finish Layout" : "Edit Layout") {
+                    Button(surfaceManager.isEditing ? L10n.finishLayout : L10n.editLayout) {
                         surfaceManager.toggleEditMode()
                     }
                     .buttonStyle(.bordered)
                 }
 
-                Text("Current widgets: \(surfaceManager.panelControllers.count)")
+                Text(L10n.currentWidgets(surfaceManager.panelControllers.count))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                 Text(surfaceManager.isEditing
-                    ? "Edit mode is on. Drag a widget by its background to move it, type width and height directly, and remove pinned items with the minus button or Remove from Widget."
-                    : "Use mode is on. Drag files or folders from Finder into widgets, use arrow keys to move selection, press Space for Quick Look, and unpin items from the button or context menu.")
+                    ? L10n.editModeDescription
+                    : L10n.useModeDescription)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let widgetPersistenceWarning = surfaceManager.widgetPersistenceWarning {
+                    Text(widgetPersistenceWarning)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Divider()
 
@@ -52,17 +59,17 @@ struct ControlCenterView: View {
 
     private var safetyControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Desktop Safety")
+            Text(L10n.desktopSafety)
                 .font(.headline)
 
             Text(surfaceManager.isDesktopHidingPaused
-                ? "Desktop file hiding is paused for this app session. Pinned files stay visible on the Desktop until hiding is resumed or the app restarts."
-                : "If hidden Desktop files ever need to be restored while the app is still running, pause hiding and show them immediately.")
+                ? L10n.desktopHidingPausedDescription
+                : L10n.desktopHidingActiveDescription)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button(surfaceManager.isDesktopHidingPaused ? "Resume Desktop Hiding" : "Show Hidden Desktop Files") {
+            Button(surfaceManager.isDesktopHidingPaused ? L10n.resumeDesktopHiding : L10n.showHiddenDesktopFiles) {
                 if surfaceManager.isDesktopHidingPaused {
                     surfaceManager.resumeDesktopHiding()
                 } else {
@@ -80,11 +87,11 @@ struct ControlCenterView: View {
                     in: AutoTraySettings.minimumDragExportRetentionMinutes...AutoTraySettings.maximumDragExportRetentionMinutes,
                     step: 15
                 ) {
-                    Text("Attachment export retention: \(formattedRetention(surfaceManager.autoTraySettings.dragExportRetentionMinutes))")
+                    Text(L10n.attachmentExportRetention(formattedRetention(surfaceManager.autoTraySettings.dragExportRetentionMinutes)))
                         .font(.subheadline.weight(.medium))
                 }
 
-                Text("Used only for hidden Desktop items dragged from File Tray into apps or browser upload areas.")
+                Text(L10n.attachmentExportRetentionHelp)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -93,50 +100,60 @@ struct ControlCenterView: View {
     }
 
     private func formattedRetention(_ minutes: Int) -> String {
-        if minutes < 60 {
-            return "\(minutes) min"
-        }
-
-        let hours = minutes / 60
-        let remainingMinutes = minutes % 60
-        if remainingMinutes == 0 {
-            return hours == 1 ? "1 hour" : "\(hours) hours"
-        }
-
-        return "\(hours)h \(remainingMinutes)m"
+        L10n.formattedRetention(minutes: minutes)
     }
 
     private var autoTraySettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Automation")
+            Text(L10n.automation)
                 .font(.headline)
 
             Toggle(
-                "Collect new Desktop screenshots",
                 isOn: Binding(
                     get: { surfaceManager.autoTraySettings.collectDesktopScreenshots },
                     set: { surfaceManager.setCollectDesktopScreenshots($0) }
                 )
-            )
+            ) {
+                Text(L10n.collectNewDesktopScreenshots)
+            }
 
             Toggle(
-                "Organize new Desktop files by type",
                 isOn: Binding(
                     get: { surfaceManager.autoTraySettings.organizeNewDesktopFiles },
                     set: { surfaceManager.setOrganizeNewDesktopFiles($0) }
                 )
-            )
+            ) {
+                Text(L10n.organizeNewDesktopFilesByType)
+            }
+
+            Toggle(
+                isOn: Binding(
+                    get: { surfaceManager.autoTraySettings.organizeNewDesktopFilesByDate },
+                    set: { surfaceManager.setOrganizeNewDesktopFilesByDate($0) }
+                )
+            ) {
+                Text(L10n.organizeNewDesktopFilesByDate)
+            }
+
+            if surfaceManager.autoTraySettings.organizeNewDesktopFilesByDate {
+                Text(L10n.dateTrayPriorityHelp)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 10)
+            }
 
             if surfaceManager.autoTraySettings.organizeNewDesktopFiles {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(FileTrayCategory.allCases) { category in
                         Toggle(
-                            category.title,
                             isOn: Binding(
                                 get: { surfaceManager.autoTraySettings.enabledCategories.contains(category) },
                                 set: { surfaceManager.setAutoTrayCategory(category, isEnabled: $0) }
                             )
-                        )
+                        ) {
+                            Text(category.title)
+                        }
                     }
                 }
                 .padding(.leading, 10)
@@ -148,15 +165,15 @@ struct ControlCenterView: View {
 
     private var customRulesEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Custom file types")
+            Text(L10n.customFileTypes)
                 .font(.subheadline.weight(.semibold))
 
             HStack(spacing: 8) {
-                TextField("Extension", text: $customExtension)
+                TextField(L10n.extensionPlaceholder, text: $customExtension)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 110)
 
-                Picker("Category", selection: $customCategory) {
+                Picker(L10n.category, selection: $customCategory) {
                     ForEach(FileTrayCategory.allCases) { category in
                         Text(category.title).tag(category)
                     }
@@ -164,7 +181,7 @@ struct ControlCenterView: View {
                 .labelsHidden()
                 .frame(width: 150)
 
-                Button("Add") {
+                Button(L10n.add) {
                     surfaceManager.addCustomFileTypeRule(extension: customExtension, category: customCategory)
                     customExtension = ""
                 }
@@ -182,7 +199,7 @@ struct ControlCenterView: View {
 
                     Spacer()
 
-                    Button("Remove") {
+                    Button(L10n.remove) {
                         surfaceManager.removeCustomFileTypeRule(rule)
                     }
                     .buttonStyle(.borderless)

@@ -18,11 +18,11 @@ struct WidgetGridMetrics {
     let maximumPanelSize = CGSize(width: 760, height: 520)
     let desktopCellSize = CGSize(width: 94, height: 94)
     let alignmentSnapThreshold: CGFloat = 12
-    let outerPadding: CGFloat = 8
-    let contentPadding: CGFloat = 14
+    let outerPadding: CGFloat = 4
+    let contentPadding: CGFloat = 10
     let itemSpacing: CGFloat = 8
     let titleAreaHeight: CGFloat = 20
-    let headerSpacing: CGFloat = 6
+    let headerSpacing: CGFloat = 4
     let headerEditorHeight: CGFloat = 32
     let sliderSectionHeight: CGFloat = 30
     let panelCornerRadius: CGFloat = 26

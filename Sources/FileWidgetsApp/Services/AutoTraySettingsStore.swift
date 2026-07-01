@@ -29,8 +29,9 @@ final class AutoTraySettingsStore {
             let data = try Data(contentsOf: storeURL)
             return try JSONDecoder().decode(AutoTraySettings.self, from: data)
         } catch {
+            let backupURL = backupUnreadableStore()
             logger.error(
-                "Failed to load auto tray settings from \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "Failed to load auto tray settings from \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public). Backup: \(backupURL?.path ?? "none", privacy: .public)"
             )
             return .defaultValue
         }
@@ -49,5 +50,34 @@ final class AutoTraySettingsStore {
                 "Failed to save auto tray settings to \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
         }
+    }
+
+    private func backupUnreadableStore() -> URL? {
+        guard fileManager.fileExists(atPath: storeURL.path) else {
+            return nil
+        }
+
+        do {
+            let backupURL = storeURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("auto-tray-settings-corrupt-\(Self.backupTimestamp()).json", isDirectory: false)
+            if fileManager.fileExists(atPath: backupURL.path) {
+                try fileManager.removeItem(at: backupURL)
+            }
+            try fileManager.copyItem(at: storeURL, to: backupURL)
+            return backupURL
+        } catch {
+            logger.error(
+                "Failed to back up unreadable auto tray settings at \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    private static func backupTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
     }
 }

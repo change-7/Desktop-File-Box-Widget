@@ -1,10 +1,17 @@
 import CoreGraphics
 import Foundation
+import FileWidgetsSupport
 import OSLog
 
 @MainActor
 final class WidgetPersistenceStore {
     static let shared = WidgetPersistenceStore()
+
+    enum LoadResult {
+        case missing
+        case loaded([WidgetModel])
+        case failed(backupURL: URL?)
+    }
 
     private let fileManager = FileManager.default
     private let logger = Logger(
@@ -21,16 +28,16 @@ final class WidgetPersistenceStore {
         self.storeURL = directoryURL.appendingPathComponent("widgets.json", isDirectory: false)
     }
 
-    func loadWidgets() -> [WidgetModel] {
+    func loadWidgets() -> LoadResult {
         guard fileManager.fileExists(atPath: storeURL.path) else {
-            return []
+            return .missing
         }
 
         do {
             let data = try Data(contentsOf: storeURL)
             let persistedState = try JSONDecoder().decode(PersistedWidgetState.self, from: data)
 
-            return persistedState.widgets.map { snapshot in
+            return .loaded(persistedState.widgets.map { snapshot in
                 WidgetModel(
                     id: snapshot.id,
                     title: snapshot.title,
@@ -39,6 +46,7 @@ final class WidgetPersistenceStore {
                         height: snapshot.panelHeight
                     ),
                     backgroundOpacity: snapshot.backgroundOpacity,
+                    backgroundColor: snapshot.backgroundColor,
                     displayMode: snapshot.displayMode,
                     trayKind: snapshot.trayKind,
                     items: snapshot.items.compactMap(loadItem(from:)),
@@ -51,12 +59,13 @@ final class WidgetPersistenceStore {
                         )
                     }
                 )
-            }
+            })
         } catch {
+            let backupURL = backupUnreadableStore()
             logger.error(
-                "Failed to load widget state from \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "Failed to load widget state from \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public). Backup: \(backupURL?.path ?? "none", privacy: .public)"
             )
-            return []
+            return .failed(backupURL: backupURL)
         }
     }
 
@@ -69,6 +78,7 @@ final class WidgetPersistenceStore {
                     panelWidth: widget.panelSize.width,
                     panelHeight: widget.panelSize.height,
                     backgroundOpacity: widget.backgroundOpacity,
+                    backgroundColor: widget.backgroundColor,
                     displayMode: widget.displayMode,
                     trayKind: widget.trayKind,
                     items: widget.items.map(makePersistedItem(from:)),
@@ -98,6 +108,35 @@ final class WidgetPersistenceStore {
         }
     }
 
+    private func backupUnreadableStore() -> URL? {
+        guard fileManager.fileExists(atPath: storeURL.path) else {
+            return nil
+        }
+
+        do {
+            let backupURL = storeURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("widgets-corrupt-\(Self.backupTimestamp()).json", isDirectory: false)
+            if fileManager.fileExists(atPath: backupURL.path) {
+                try fileManager.removeItem(at: backupURL)
+            }
+            try fileManager.copyItem(at: storeURL, to: backupURL)
+            return backupURL
+        } catch {
+            logger.error(
+                "Failed to back up unreadable widget state at \(self.storeURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    private static func backupTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
     private func loadItem(from persistedItem: PersistedWidgetItem) -> WidgetItem? {
         let fallbackURL = URL(fileURLWithPath: persistedItem.path).standardizedFileURL
 
@@ -114,7 +153,11 @@ final class WidgetPersistenceStore {
                     ? refreshedBookmarkData(for: resolvedURL) ?? bookmarkData
                     : bookmarkData
 
-                if let item = WidgetItem(url: resolvedURL, bookmarkData: effectiveBookmarkData) {
+                if let item = WidgetItem(
+                    url: resolvedURL,
+                    bookmarkData: effectiveBookmarkData,
+                    fileIdentity: persistedItem.fileIdentity
+                ) {
                     return item
                 }
 
@@ -128,7 +171,7 @@ final class WidgetPersistenceStore {
             }
         }
 
-        if let item = WidgetItem(url: fallbackURL) {
+        if let item = WidgetItem(url: fallbackURL, fileIdentity: persistedItem.fileIdentity) {
             return item
         }
 
@@ -150,7 +193,8 @@ final class WidgetPersistenceStore {
 
         return PersistedWidgetItem(
             path: standardizedPath,
-            bookmarkData: bookmarkData
+            bookmarkData: bookmarkData,
+            fileIdentity: item.fileIdentity ?? DesktopVisibilitySupport.fileIdentity(for: item.url)
         )
     }
 
@@ -180,6 +224,7 @@ private struct PersistedWidget: Codable {
     let panelWidth: CGFloat
     let panelHeight: CGFloat
     let backgroundOpacity: Double
+    let backgroundColor: WidgetBackgroundColor?
     let displayMode: WidgetDisplayMode
     let trayKind: WidgetTrayKind
     let items: [PersistedWidgetItem]
@@ -191,6 +236,7 @@ private struct PersistedWidget: Codable {
         case panelWidth
         case panelHeight
         case backgroundOpacity
+        case backgroundColor
         case displayMode
         case trayKind
         case items
@@ -204,6 +250,7 @@ private struct PersistedWidget: Codable {
         panelWidth: CGFloat,
         panelHeight: CGFloat,
         backgroundOpacity: Double,
+        backgroundColor: WidgetBackgroundColor?,
         displayMode: WidgetDisplayMode,
         trayKind: WidgetTrayKind,
         items: [PersistedWidgetItem],
@@ -214,6 +261,7 @@ private struct PersistedWidget: Codable {
         self.panelWidth = panelWidth
         self.panelHeight = panelHeight
         self.backgroundOpacity = backgroundOpacity
+        self.backgroundColor = backgroundColor
         self.displayMode = displayMode
         self.trayKind = trayKind
         self.items = items
@@ -227,12 +275,13 @@ private struct PersistedWidget: Codable {
         panelWidth = try container.decode(CGFloat.self, forKey: .panelWidth)
         panelHeight = try container.decode(CGFloat.self, forKey: .panelHeight)
         backgroundOpacity = try container.decode(Double.self, forKey: .backgroundOpacity)
+        backgroundColor = try container.decodeIfPresent(WidgetBackgroundColor.self, forKey: .backgroundColor)
         displayMode = try container.decodeIfPresent(WidgetDisplayMode.self, forKey: .displayMode) ?? .grid
         trayKind = try container.decodeIfPresent(WidgetTrayKind.self, forKey: .trayKind) ?? .manual
         frame = try container.decodeIfPresent(PersistedRect.self, forKey: .frame)
         items = try container.decodeIfPresent([PersistedWidgetItem].self, forKey: .items)
             ?? (try container.decodeIfPresent([String].self, forKey: .itemPaths) ?? []).map {
-                PersistedWidgetItem(path: $0, bookmarkData: nil)
+                PersistedWidgetItem(path: $0, bookmarkData: nil, fileIdentity: nil)
             }
     }
 
@@ -243,6 +292,7 @@ private struct PersistedWidget: Codable {
         try container.encode(panelWidth, forKey: .panelWidth)
         try container.encode(panelHeight, forKey: .panelHeight)
         try container.encode(backgroundOpacity, forKey: .backgroundOpacity)
+        try container.encodeIfPresent(backgroundColor, forKey: .backgroundColor)
         try container.encode(displayMode, forKey: .displayMode)
         try container.encode(trayKind, forKey: .trayKind)
         try container.encode(items, forKey: .items)
@@ -253,6 +303,7 @@ private struct PersistedWidget: Codable {
 private struct PersistedWidgetItem: Codable {
     let path: String
     let bookmarkData: Data?
+    let fileIdentity: String?
 }
 
 private struct PersistedRect: Codable {

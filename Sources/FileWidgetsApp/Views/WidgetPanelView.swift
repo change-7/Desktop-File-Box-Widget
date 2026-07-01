@@ -1,4 +1,6 @@
 import AppKit
+import FileWidgetsSupport
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -15,21 +17,23 @@ struct WidgetPanelView: View {
     let onMoveItemToTrash: (WidgetItem) -> Void
     let onMoveAllItemsToTrash: () -> Void
     let onApplyPanelSize: (CGSize) -> Void
-    let onResizeDragActiveChange: (Bool) -> Void
     let onRename: (String) -> Void
     let onBackgroundOpacityChange: (Double) -> Void
+    let onBackgroundColorChange: (WidgetBackgroundColor?) -> Void
     let onDropItems: ([URL]) -> Void
+    let onCloseTray: () -> Void
 
     private let metrics = WidgetGridMetrics()
     @State private var isDropTargeted = false
     @State private var hoveredItemID: WidgetItem.ID?
     @State private var draftTitle = ""
     @State private var draftBackgroundOpacity = 0.78
+    @State private var draftBackgroundColor: WidgetBackgroundColor?
     @State private var draftOpacity = ""
     @State private var draftWidth = ""
     @State private var draftHeight = ""
     @State private var sizeInputMode: SizeInputMode = .pixels
-    @State private var resizeStartSize: CGSize?
+    @State private var dropTask: Task<Void, Never>?
     @FocusState private var focusedField: SizeField?
 
     private enum SizeField {
@@ -47,15 +51,20 @@ struct WidgetPanelView: View {
         var title: String {
             switch self {
             case .pixels:
-                return "Pixels"
+                return L10n.pixels
             case .cells:
-                return "Cells"
+                return L10n.cells
             }
         }
     }
 
     private var effectiveBackgroundOpacity: Double {
         isEditing ? draftBackgroundOpacity : widgetModel.backgroundOpacity
+    }
+
+    private var effectiveBackgroundColor: Color {
+        (isEditing ? draftBackgroundColor : widgetModel.backgroundColor)?.swiftUIColor
+            ?? Color(nsColor: .windowBackgroundColor)
     }
 
     var body: some View {
@@ -72,19 +81,14 @@ struct WidgetPanelView: View {
             )
 
             ZStack {
+                let panelColor = effectiveBackgroundColor
+
                 RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous)
                     .fill(.ultraThinMaterial.opacity(effectiveBackgroundOpacity))
                     .padding(metrics.outerPadding)
 
                 RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous)
-                    .fill(Color(nsColor: .windowBackgroundColor).opacity(effectiveBackgroundOpacity))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous)
-                            .strokeBorder(
-                                .white.opacity((0.14 + (effectiveBackgroundOpacity * 0.12)) * effectiveBackgroundOpacity),
-                                lineWidth: 1
-                            )
-                    }
+                    .fill(panelColor.opacity(effectiveBackgroundOpacity))
                     .overlay {
                         RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous)
                             .fill(
@@ -102,7 +106,7 @@ struct WidgetPanelView: View {
                     .padding(metrics.outerPadding)
 
                 VStack(alignment: .leading, spacing: metrics.headerSpacing) {
-                    header(panelSize: panelSize)
+                    header
 
                     if widgetModel.items.isEmpty {
                         EmptyWidgetDropZone(isEditing: isEditing, isDropTargeted: isDropTargeted)
@@ -118,24 +122,31 @@ struct WidgetPanelView: View {
                 .padding(metrics.panelContentInset)
 
                 if isEditing {
-                    ResizeHandle()
+                    editOverlay(panelSize: panelSize)
+                        .padding(metrics.outerPadding + 10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
+                        .zIndex(2)
+
+                    ResizeCornerGrip()
                         .padding(metrics.outerPadding + 8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .gesture(resizeGesture(currentSize: panelSize))
+                        .allowsHitTesting(false)
+                        .zIndex(3)
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous))
             .contextMenu {
-                Button(isEditing ? "Finish Layout" : "Edit Layout") {
+                Button(isEditing ? L10n.finishLayout : L10n.editLayout) {
                     onToggleEditLayout()
                 }
 
-                Menu("View As") {
-                    Button("Icons") {
+                Menu(L10n.viewAs) {
+                    Button(L10n.icons) {
                         onSetDisplayMode(.grid)
                     }
 
-                    Button("List") {
+                    Button(L10n.list) {
                         onSetDisplayMode(.list)
                     }
                 }
@@ -144,22 +155,38 @@ struct WidgetPanelView: View {
                    widgetModel.items.isEmpty == false {
                     Divider()
 
-                    Button("Copy All Screenshots") {
+                    Button(L10n.copyAllScreenshots) {
                         onCopyAllItems()
                     }
 
-                    Button("Move All Screenshots to Trash") {
-                        onMoveAllItemsToTrash()
+                    if hasTrashableScreenshots {
+                        Button(L10n.moveAllScreenshotsToTrash) {
+                            onMoveAllItemsToTrash()
+                        }
                     }
                 }
             }
         }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: dropTargetBinding) { providers in
-            guard !isEditing else { return false }
-            Task {
+            guard !isEditing,
+                  widgetModel.trayKind.isScreenshots == false,
+                  providers.contains(where: FileTrayDragPasteboard.isInternalDragProvider) == false else {
+                return false
+            }
+            dropTask?.cancel()
+            dropTask = Task {
                 let urls = await loadDroppedURLs(from: providers)
-                guard !urls.isEmpty else { return }
+                guard !Task.isCancelled,
+                      !urls.isEmpty else {
+                    return
+                }
                 await MainActor.run {
+                    guard !Task.isCancelled,
+                          !isEditing,
+                          widgetModel.trayKind.isScreenshots == false else {
+                        return
+                    }
+                    dropTask = nil
                     onDropItems(urls)
                 }
             }
@@ -181,114 +208,182 @@ struct WidgetPanelView: View {
                 draftBackgroundOpacity = newValue
             }
         }
+        .onChange(of: widgetModel.backgroundColor) { _, newValue in
+            if !isEditing {
+                draftBackgroundColor = newValue
+            }
+        }
         .onChange(of: widgetModel.panelSize) { _, newValue in
             guard focusedField == nil else { return }
             syncSizeDraft(from: newValue)
         }
         .onChange(of: isEditing) { _, editing in
             if editing {
+                dropTask?.cancel()
+                dropTask = nil
                 syncEditorStateFromModel()
             } else {
                 focusedField = nil
             }
         }
+        .onDisappear {
+            dropTask?.cancel()
+            dropTask = nil
+        }
     }
 
     private var dropTargetBinding: Binding<Bool> {
         Binding(
-            get: { !isEditing && isDropTargeted },
-            set: { isDropTargeted = !isEditing && $0 }
+            get: { !isEditing && widgetModel.trayKind.isScreenshots == false && isDropTargeted },
+            set: { isDropTargeted = !isEditing && widgetModel.trayKind.isScreenshots == false && $0 }
         )
     }
 
-    private func resizeGesture(currentSize: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                if resizeStartSize == nil {
-                    resizeStartSize = currentSize
-                    focusedField = nil
-                    onResizeDragActiveChange(true)
-                }
-
-                guard let resizeStartSize else { return }
-                onApplyPanelSize(
-                    CGSize(
-                        width: resizeStartSize.width + value.translation.width,
-                        height: resizeStartSize.height + value.translation.height
-                    )
-                )
-            }
-            .onEnded { _ in
-                resizeStartSize = nil
-                onResizeDragActiveChange(false)
-                syncSizeDraft(from: widgetModel.panelSize)
-            }
+    private var hasTrashableScreenshots: Bool {
+        widgetModel.items.contains(where: canMoveItemToTrash)
     }
 
-    private func header(panelSize: CGSize) -> some View {
-        let usesCompactEditorHeader = panelSize.width < 470
+    private var header: some View {
+        ZStack {
+            Text(widgetModel.title)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 68)
 
-        return VStack(alignment: .leading, spacing: isEditing ? 6 : 4) {
-            if isEditing {
-                if usesCompactEditorHeader {
-                    VStack(alignment: .leading, spacing: 6) {
-                        titleField
+            HStack(spacing: 8) {
+                closeTrayButton
+
+                Spacer(minLength: 0)
+
+                headerActionButtons
+            }
+        }
+        .frame(minHeight: metrics.titleAreaHeight, alignment: .center)
+    }
+
+    private var closeTrayButton: some View {
+        Button {
+            onCloseTray()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .frame(width: 18, height: 18)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(L10n.closeTray)
+    }
+
+    @ViewBuilder
+    private var headerActionButtons: some View {
+        if widgetModel.items.isEmpty == false {
+            Button {
+                onCopyAllItems()
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help(widgetModel.trayKind.isScreenshots ? L10n.copyAllScreenshots : L10n.copyTrayItems)
+        }
+
+        if widgetModel.trayKind.isScreenshots,
+           widgetModel.items.isEmpty == false,
+           hasTrashableScreenshots {
+            Button {
+                onMoveAllItemsToTrash()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help(L10n.moveAllScreenshotsToTrash)
+        }
+    }
+
+    private func editOverlay(panelSize: CGSize) -> some View {
+        let overlayWidth = max(260, min(panelSize.width - ((metrics.outerPadding + 10) * 2), 520))
+        let usesCompactLayout = overlayWidth < 430
+
+        return VStack(alignment: .leading, spacing: 8) {
+            if usesCompactLayout {
+                VStack(alignment: .leading, spacing: 7) {
+                    titleField
+                    HStack(spacing: 8) {
                         sizeModePicker
                         sizeEditor
                     }
-                } else {
+                    appearanceEditor
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .center, spacing: 8) {
                         titleField
                         sizeModePicker
                         sizeEditor
                     }
-                }
-
-                HStack(spacing: 8) {
-                    Text("Opacity")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 42, alignment: .leading)
-
-                    opacityField
-                }
-            } else {
-                HStack(spacing: 8) {
-                    Text(widgetModel.title)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-
-                    if widgetModel.trayKind.isScreenshots,
-                       widgetModel.items.isEmpty == false {
-                        Button {
-                            onCopyAllItems()
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Copy All Screenshots")
-
-                        Button {
-                            onMoveAllItemsToTrash()
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Move All Screenshots to Trash")
-                    }
+                    appearanceEditor
                 }
             }
         }
-        .frame(minHeight: metrics.titleAreaHeight, alignment: .top)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(width: overlayWidth, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 8)
+    }
+
+    private var appearanceEditor: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Text(L10n.opacity)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .leading)
+
+                opacityField
+            }
+
+            HStack(spacing: 6) {
+                Text(L10n.color)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ColorPicker(
+                    "",
+                    selection: backgroundColorBinding,
+                    supportsOpacity: false
+                )
+                .labelsHidden()
+                .frame(width: 28, height: 24)
+
+                Button {
+                    draftBackgroundColor = nil
+                    onBackgroundColorChange(nil)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(L10n.useDefaultColor)
+                .disabled(draftBackgroundColor == nil)
+            }
+        }
     }
 
     private var titleField: some View {
         TextField(
-            "Widget Name",
+            L10n.widgetName,
             text: Binding(
                 get: { draftTitle },
                 set: {
@@ -306,7 +401,7 @@ struct WidgetPanelView: View {
     }
 
     private var sizeModePicker: some View {
-        Picker("Size Unit", selection: $sizeInputMode) {
+        Picker(L10n.sizeUnit, selection: $sizeInputMode) {
             ForEach(SizeInputMode.allCases) { mode in
                 Text(mode.title).tag(mode)
             }
@@ -360,6 +455,19 @@ struct WidgetPanelView: View {
         }
     }
 
+    private var backgroundColorBinding: Binding<Color> {
+        Binding(
+            get: {
+                draftBackgroundColor?.swiftUIColor ?? Color(nsColor: .windowBackgroundColor)
+            },
+            set: { newColor in
+                let storedColor = WidgetBackgroundColor(color: newColor)
+                draftBackgroundColor = storedColor
+                onBackgroundColorChange(storedColor)
+            }
+        )
+    }
+
     @ViewBuilder
     private func makeItemCell(item: WidgetItem, itemSize: CGSize) -> some View {
         let baseCell = WidgetItemCell(
@@ -381,26 +489,26 @@ struct WidgetPanelView: View {
         }
         .contextMenu {
             if !isEditing {
-                Button("Open") {
+                Button(L10n.open) {
                     onOpen(item)
                 }
             }
 
-            Button("Reveal in Finder") {
+            Button(L10n.revealInFinder) {
                 onRevealInFinder(item)
             }
 
             Divider()
 
-            if widgetModel.trayKind.isScreenshots {
-                Button("Move to Trash") {
+            if canMoveItemToTrash(item) {
+                Button(L10n.moveToTrash) {
                     onMoveItemToTrash(item)
                 }
 
                 Divider()
             }
 
-            Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
+            Button(isEditing ? L10n.removeFromWidget : L10n.unpinFromWidget) {
                 onRemoveItem(item)
             }
         }
@@ -413,7 +521,7 @@ struct WidgetPanelView: View {
                     FileAttachmentDragLayer(
                         item: item,
                         showsRemoveButton: hoveredItemID == item.id,
-                        isScreenshotTray: widgetModel.trayKind.isScreenshots,
+                        canMoveToTrash: canMoveItemToTrash(item),
                         onHoverChanged: { isHovering in
                             if isHovering {
                                 hoveredItemID = item.id
@@ -511,26 +619,26 @@ struct WidgetPanelView: View {
         }
         .contextMenu {
             if !isEditing {
-                Button("Open") {
+                Button(L10n.open) {
                     onOpen(item)
                 }
             }
 
-            Button("Reveal in Finder") {
+            Button(L10n.revealInFinder) {
                 onRevealInFinder(item)
             }
 
             Divider()
 
-            if widgetModel.trayKind.isScreenshots {
-                Button("Move to Trash") {
+            if canMoveItemToTrash(item) {
+                Button(L10n.moveToTrash) {
                     onMoveItemToTrash(item)
                 }
 
                 Divider()
             }
 
-            Button(isEditing ? "Remove from Widget" : "Unpin from Widget") {
+            Button(isEditing ? L10n.removeFromWidget : L10n.unpinFromWidget) {
                 onRemoveItem(item)
             }
         }
@@ -543,7 +651,7 @@ struct WidgetPanelView: View {
                     FileAttachmentDragLayer(
                         item: item,
                         showsRemoveButton: hoveredItemID == item.id,
-                        isScreenshotTray: widgetModel.trayKind.isScreenshots,
+                        canMoveToTrash: canMoveItemToTrash(item),
                         onHoverChanged: { isHovering in
                             if isHovering {
                                 hoveredItemID = item.id
@@ -559,6 +667,30 @@ struct WidgetPanelView: View {
                     )
                 }
         }
+    }
+
+    private func canMoveItemToTrash(_ item: WidgetItem) -> Bool {
+        guard widgetModel.trayKind.isScreenshots,
+              item.kind == .file,
+              isDirectDesktopChild(item.url),
+              DesktopFileClassifier.isScreenshot(item.url),
+              let expectedIdentity = item.fileIdentity,
+              let currentIdentity = DesktopVisibilitySupport.fileIdentity(for: item.url),
+              currentIdentity == expectedIdentity else {
+            return false
+        }
+
+        return true
+    }
+
+    private func isDirectDesktopChild(_ url: URL) -> Bool {
+        guard let desktopDirectoryURL else { return false }
+        let normalizedURL = url.standardizedFileURL.resolvingSymlinksInPath()
+        return normalizedURL.deletingLastPathComponent().standardizedFileURL == desktopDirectoryURL
+    }
+
+    private var desktopDirectoryURL: URL? {
+        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.standardizedFileURL
     }
 
     private func sizeField(title: String, text: Binding<String>, field: SizeField) -> some View {
@@ -677,6 +809,7 @@ struct WidgetPanelView: View {
     private func syncEditorStateFromModel() {
         draftTitle = widgetModel.title
         draftBackgroundOpacity = widgetModel.backgroundOpacity
+        draftBackgroundColor = widgetModel.backgroundColor
         draftOpacity = String(Int((widgetModel.backgroundOpacity * 100).rounded()))
         syncSizeDraft(from: widgetModel.panelSize)
     }
@@ -735,6 +868,29 @@ struct WidgetPanelView: View {
     }
 }
 
+private extension WidgetBackgroundColor {
+    init(color: Color) {
+        let nsColor = NSColor(color)
+        let srgbColor = nsColor.usingColorSpace(.sRGB) ?? nsColor
+        self.init(
+            red: Double(srgbColor.redComponent),
+            green: Double(srgbColor.greenComponent),
+            blue: Double(srgbColor.blueComponent),
+            alpha: 1.0
+        )
+    }
+
+    var swiftUIColor: Color {
+        Color(
+            .sRGB,
+            red: red,
+            green: green,
+            blue: blue,
+            opacity: alpha
+        )
+    }
+}
+
 private struct WidgetListLayoutMetrics {
     let rowHeight: CGFloat
     let horizontalPadding: CGFloat
@@ -746,23 +902,23 @@ private struct WidgetListLayoutMetrics {
     let cornerRadius: CGFloat
 }
 
-private struct ResizeHandle: View {
+private struct ResizeCornerGrip: View {
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.ultraThinMaterial.opacity(0.92))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(.white.opacity(0.22), lineWidth: 1)
-                }
-
-            Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.primary.opacity(0.86))
+        Canvas { context, size in
+            let stroke = StrokeStyle(lineWidth: 1.4, lineCap: .round)
+            for offset in stride(from: CGFloat(5), through: CGFloat(17), by: CGFloat(6)) {
+                var path = Path()
+                path.move(to: CGPoint(x: size.width - offset, y: size.height - 2))
+                path.addLine(to: CGPoint(x: size.width - 2, y: size.height - offset))
+                context.stroke(path, with: .color(.white.opacity(0.48)), style: stroke)
+            }
         }
-        .frame(width: 28, height: 28)
-        .contentShape(Rectangle())
-        .help("Drag to resize")
+        .frame(width: 24, height: 24)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.black.opacity(0.12))
+        )
+        .opacity(0.82)
     }
 }
 
@@ -866,14 +1022,7 @@ private struct EmptyWidgetDropZone: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .strokeBorder(
-                style: StrokeStyle(lineWidth: 1.4, dash: [8, 8])
-            )
-            .foregroundStyle(isDropTargeted ? .white.opacity(0.85) : .white.opacity(0.28))
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(isDropTargeted ? .white.opacity(0.12) : .white.opacity(0.04))
-            )
+            .fill(isDropTargeted ? .white.opacity(0.12) : .white.opacity(0.035))
             .overlay {
                 VStack(spacing: 10) {
                     Image(systemName: isEditing ? "arrow.up.and.down.and.arrow.left.and.right" : "tray.and.arrow.down.fill")
@@ -881,20 +1030,20 @@ private struct EmptyWidgetDropZone: View {
                         .foregroundStyle(.white.opacity(0.92))
 
                     if !isEditing {
-                        Text("Drop files or folders here")
+                        Text(L10n.dropFilesHere)
                             .font(.headline)
                             .foregroundStyle(.white.opacity(0.94))
                     }
 
                     Text(isEditing
-                        ? "Move the widget. Size and opacity are above."
-                        : "Create an empty widget, then drag items from Finder to pin them here.")
+                        ? L10n.editEmptyWidgetHint
+                        : L10n.useEmptyWidgetHint)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 260)
                 }
-                .padding(24)
+                .padding(16)
             }
     }
 }
@@ -902,7 +1051,7 @@ private struct EmptyWidgetDropZone: View {
 private struct FileAttachmentDragLayer: NSViewRepresentable {
     let item: WidgetItem
     let showsRemoveButton: Bool
-    let isScreenshotTray: Bool
+    let canMoveToTrash: Bool
     let onHoverChanged: (Bool) -> Void
     let onSelect: () -> Void
     let onOpen: () -> Void
@@ -915,7 +1064,7 @@ private struct FileAttachmentDragLayer: NSViewRepresentable {
         view.update(
             item: item,
             showsRemoveButton: showsRemoveButton,
-            isScreenshotTray: isScreenshotTray,
+            canMoveToTrash: canMoveToTrash,
             onHoverChanged: onHoverChanged,
             onSelect: onSelect,
             onOpen: onOpen,
@@ -930,7 +1079,7 @@ private struct FileAttachmentDragLayer: NSViewRepresentable {
         nsView.update(
             item: item,
             showsRemoveButton: showsRemoveButton,
-            isScreenshotTray: isScreenshotTray,
+            canMoveToTrash: canMoveToTrash,
             onHoverChanged: onHoverChanged,
             onSelect: onSelect,
             onOpen: onOpen,
@@ -941,10 +1090,45 @@ private struct FileAttachmentDragLayer: NSViewRepresentable {
     }
 }
 
+private enum FileTrayDragPasteboard {
+    static let internalTypeIdentifier = "com.codex.filetray.internal-item"
+    static let internalPasteboardType = NSPasteboard.PasteboardType(internalTypeIdentifier)
+
+    static func isInternalDragProvider(_ provider: NSItemProvider) -> Bool {
+        provider.hasItemConformingToTypeIdentifier(internalTypeIdentifier)
+    }
+}
+
+private final class FileTrayDraggingPasteboardWriter: NSObject, NSPasteboardWriting {
+    private let fileURL: URL
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
+    func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        [
+            .fileURL,
+            FileTrayDragPasteboard.internalPasteboardType,
+        ]
+    }
+
+    func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        switch type {
+        case .fileURL:
+            return fileURL.absoluteString
+        case FileTrayDragPasteboard.internalPasteboardType:
+            return "1"
+        default:
+            return nil
+        }
+    }
+}
+
 private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
     private var item: WidgetItem?
     private var showsRemoveButton = false
-    private var isScreenshotTray = false
+    private var canMoveToTrash = false
     private var onHoverChanged: ((Bool) -> Void)?
     private var onSelect: (() -> Void)?
     private var onOpen: (() -> Void)?
@@ -963,7 +1147,7 @@ private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
     func update(
         item: WidgetItem,
         showsRemoveButton: Bool,
-        isScreenshotTray: Bool,
+        canMoveToTrash: Bool,
         onHoverChanged: @escaping (Bool) -> Void,
         onSelect: @escaping () -> Void,
         onOpen: @escaping () -> Void,
@@ -973,7 +1157,7 @@ private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
     ) {
         self.item = item
         self.showsRemoveButton = showsRemoveButton
-        self.isScreenshotTray = isScreenshotTray
+        self.canMoveToTrash = canMoveToTrash
         self.onHoverChanged = onHoverChanged
         self.onSelect = onSelect
         self.onOpen = onOpen
@@ -1056,7 +1240,11 @@ private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
         _ session: NSDraggingSession,
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
-        .copy
+        guard context != .withinApplication else {
+            return NSDragOperation()
+        }
+
+        return NSDragOperation.copy
     }
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
@@ -1080,13 +1268,17 @@ private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
             return
         }
 
+        guard let exportURL = FileDragExportService.shared.dragURL(for: item.url) else {
+            return
+        }
+
         didStartDrag = true
         onSelect?()
-
-        let exportURL = FileDragExportService.shared.dragURL(for: item.url)
         activeExportURL = exportURL
 
-        let draggingItem = NSDraggingItem(pasteboardWriter: exportURL as NSURL)
+        let draggingItem = NSDraggingItem(
+            pasteboardWriter: FileTrayDraggingPasteboardWriter(fileURL: exportURL)
+        )
         let localPoint = convert(event.locationInWindow, from: nil)
         let previewSize = dragPreviewSize
         let dragFrame = NSRect(
@@ -1121,16 +1313,16 @@ private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
 
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(menuItem("Open", action: #selector(performOpen)))
-        menu.addItem(menuItem("Reveal in Finder", action: #selector(performRevealInFinder)))
+        menu.addItem(menuItem(L10n.open, action: #selector(performOpen)))
+        menu.addItem(menuItem(L10n.revealInFinder, action: #selector(performRevealInFinder)))
         menu.addItem(.separator())
 
-        if isScreenshotTray {
-            menu.addItem(menuItem("Move to Trash", action: #selector(performMoveToTrash)))
+        if canMoveToTrash {
+            menu.addItem(menuItem(L10n.moveToTrash, action: #selector(performMoveToTrash)))
             menu.addItem(.separator())
         }
 
-        menu.addItem(menuItem("Unpin from Widget", action: #selector(performRemove)))
+        menu.addItem(menuItem(L10n.unpinFromWidget, action: #selector(performRemove)))
         return menu
     }
 
@@ -1164,7 +1356,7 @@ private final class FileAttachmentDragSourceView: NSView, NSDraggingSource {
     private func dragImage(for item: WidgetItem, size: NSSize) -> NSImage {
         let sourceImage: NSImage
         if item.isImage,
-           let preview = NSImage(contentsOf: item.url) {
+           let preview = WidgetImageRenderer.downsampledImage(at: item.url, maxPixelSize: max(size.width, size.height) * 2) {
             sourceImage = preview
         } else {
             sourceImage = NSWorkspace.shared.icon(forFile: item.url.path)
@@ -1341,7 +1533,7 @@ private struct RemoveItemButton: View {
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
-        .help(style == .remove ? "Remove from Widget" : "Unpin from Widget")
+        .help(style == .remove ? L10n.removeFromWidget : L10n.unpinFromWidget)
     }
 }
 
@@ -1474,6 +1666,32 @@ private struct WidgetListArtwork: View {
     }
 }
 
+private enum WidgetImageRenderer {
+    static func downsampledImage(at url: URL, maxPixelSize: CGFloat) -> NSImage? {
+        let sourceOptions = [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            return nil
+        }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxPixelSize.rounded())),
+        ] as CFDictionary
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, thumbnailOptions) else {
+            return nil
+        }
+
+        return NSImage(
+            cgImage: thumbnail,
+            size: NSSize(width: thumbnail.width, height: thumbnail.height)
+        )
+    }
+}
+
 @MainActor
 private final class WidgetArtworkLoader: ObservableObject {
     @Published private(set) var artwork: NSImage?
@@ -1482,10 +1700,15 @@ private final class WidgetArtworkLoader: ObservableObject {
     private let url: URL
     private let prefersImagePreview: Bool
     private var hasLoaded = false
+    private var loadTask: Task<Void, Never>?
 
     init(url: URL, prefersImagePreview: Bool) {
         self.url = url
         self.prefersImagePreview = prefersImagePreview
+    }
+
+    deinit {
+        loadTask?.cancel()
     }
 
     func loadIfNeeded() {
@@ -1508,11 +1731,18 @@ private final class WidgetArtworkLoader: ObservableObject {
 
         if prefersImagePreview {
             let fileURL = url
-            Task.detached(priority: .userInitiated) {
-                let imageData = try? Data(contentsOf: fileURL, options: [.mappedIfSafe])
-                await MainActor.run {
-                    guard let imageData,
-                          let preview = NSImage(data: imageData) else {
+            loadTask = Task.detached(priority: .userInitiated) { [weak self] in
+                let preview = WidgetImageRenderer.downsampledImage(at: fileURL, maxPixelSize: 512)
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          !Task.isCancelled else {
+                        return
+                    }
+
+                    self.loadTask = nil
+                    guard let preview else {
                         self.loadFallbackIcon()
                         return
                     }

@@ -13,10 +13,22 @@ final class DesktopItemVisibilityService {
     private let fileManager = FileManager.default
     private let stateStore: DesktopVisibilityStateStore
     private var state: DesktopVisibilityState
+    private var didRecoverFromUnreadableState: Bool
 
     private init(stateStore: DesktopVisibilityStateStore = DesktopVisibilityStateStore()) {
         self.stateStore = stateStore
-        self.state = stateStore.load()
+        switch stateStore.loadResult() {
+        case .missing:
+            self.state = DesktopVisibilityState()
+            self.didRecoverFromUnreadableState = false
+        case .loaded(let state):
+            self.state = state
+            self.didRecoverFromUnreadableState = false
+        case .failed(let backupURL):
+            self.state = DesktopVisibilityState()
+            self.didRecoverFromUnreadableState = true
+            logger.error("Desktop visibility state was unreadable. Backup: \(backupURL?.path ?? "none", privacy: .public)")
+        }
     }
 
     func recoverInterruptedSessionIfNeeded() {
@@ -25,26 +37,38 @@ final class DesktopItemVisibilityService {
             return
         }
 
-        guard DesktopVisibilitySupport.processExists(ownerPID) == false else {
+        guard DesktopVisibilitySupport.processMatches(
+            pid: ownerPID,
+            executablePath: state.ownerExecutablePath
+        ) == false else {
             return
         }
 
-        DesktopVisibilitySupport.restoreManagedEntries(
+        let restoreResult = DesktopVisibilitySupport.restoreManagedEntries(
             state.managedEntries,
             fileIdentities: state.managedFileIdentities
         )
-        logger.notice("Recovered interrupted visibility session \(activeSessionID, privacy: .public)")
-        state = DesktopVisibilityState()
+        if restoreResult.unresolvedCount > 0 {
+            logger.error("Recovered interrupted visibility session \(activeSessionID, privacy: .public) with \(restoreResult.unresolvedCount, privacy: .public) unresolved entries")
+        } else {
+            logger.notice("Recovered interrupted visibility session \(activeSessionID, privacy: .public)")
+        }
+        state = DesktopVisibilitySupport.unresolvedState(
+            from: restoreResult,
+            activeSessionID: activeSessionID,
+            ownerPID: ownerPID,
+            ownerExecutablePath: state.ownerExecutablePath
+        )
         persistState()
     }
 
-    func beginSession(ownerPID: Int32, sessionID: String) {
+    func beginSession(ownerPID: Int32, sessionID: String, ownerExecutablePath: String?) {
         state.activeSessionID = sessionID
         state.ownerPID = ownerPID
-        persistState()
+        state.ownerExecutablePath = ownerExecutablePath
     }
 
-    func launchGuardianIfPossible(sessionID: String, ownerPID: Int32) {
+    func launchGuardianIfPossible(sessionID: String, ownerPID: Int32, ownerExecutablePath: String?) {
         guard let executableURL = visibilityGuardianExecutableURL() else {
             logger.error("VisibilityGuardian executable was not found")
             return
@@ -52,7 +76,12 @@ final class DesktopItemVisibilityService {
 
         let process = Process()
         process.executableURL = executableURL
-        process.arguments = [sessionID, String(ownerPID)]
+        var arguments = [sessionID, String(ownerPID)]
+        if let ownerExecutablePath,
+           ownerExecutablePath.isEmpty == false {
+            arguments.append(ownerExecutablePath)
+        }
+        process.arguments = arguments
 
         do {
             try process.run()
@@ -68,6 +97,13 @@ final class DesktopItemVisibilityService {
         for path in pinnedDesktopPaths {
             let url = URL(fileURLWithPath: path)
             let currentHiddenState = DesktopVisibilitySupport.currentHiddenState(for: url) ?? false
+            if didRecoverFromUnreadableState && currentHiddenState {
+                logger.warning("Skipped managing already-hidden Desktop item after unreadable recovery state: \(path, privacy: .public)")
+                targetState.managedEntries.removeValue(forKey: path)
+                targetState.managedFileIdentities.removeValue(forKey: path)
+                continue
+            }
+
             let currentIdentity = DesktopVisibilitySupport.fileIdentity(for: url)
             let previousIdentity = targetState.managedFileIdentities[path]
             let identityChanged = previousIdentity != nil
@@ -89,26 +125,33 @@ final class DesktopItemVisibilityService {
 
         for path in pinnedDesktopPaths {
             let url = URL(fileURLWithPath: path)
-            if DesktopVisibilitySupport.currentHiddenState(for: url) == false {
-                _ = DesktopVisibilitySupport.setHidden(true, for: url)
+            guard let expectedIdentity = state.managedFileIdentities[path],
+                  let currentIdentity = DesktopVisibilitySupport.fileIdentity(for: url),
+                  currentIdentity == expectedIdentity else {
+                logger.error("Skipped hiding Desktop item because its identity changed before hide: \(path, privacy: .public)")
+                state.managedEntries.removeValue(forKey: path)
+                state.managedFileIdentities.removeValue(forKey: path)
+                continue
+            }
+
+            if DesktopVisibilitySupport.currentHiddenState(for: url) == false,
+               DesktopVisibilitySupport.setHidden(true, for: url) == false {
+                logger.error("Failed to hide managed Desktop item \(path, privacy: .public)")
+                state.managedEntries.removeValue(forKey: path)
+                state.managedFileIdentities.removeValue(forKey: path)
             }
         }
 
         let stalePaths = Set(state.managedEntries.keys).subtracting(pinnedDesktopPaths)
         var finalState = state
         for path in stalePaths {
-            let url = URL(fileURLWithPath: path)
             guard let wasHiddenBeforeManaging = state.managedEntries[path] else { continue }
-            let expectedIdentity = state.managedFileIdentities[path]
-            let currentIdentity = DesktopVisibilitySupport.fileIdentity(for: url)
-            let identityMatches = expectedIdentity == nil
-                || currentIdentity == nil
-                || expectedIdentity == currentIdentity
+            let restoreResult = DesktopVisibilitySupport.restoreManagedEntries(
+                [path: wasHiddenBeforeManaging],
+                fileIdentities: state.managedFileIdentities[path].map { [path: $0] } ?? [:]
+            )
 
-            if wasHiddenBeforeManaging == false,
-               fileManager.fileExists(atPath: path),
-               identityMatches,
-               DesktopVisibilitySupport.setHidden(false, for: url) == false {
+            if restoreResult.unresolvedEntries[path] != nil {
                 logger.error("Failed to restore visible state for \(path, privacy: .public)")
                 continue
             }
@@ -119,20 +162,33 @@ final class DesktopItemVisibilityService {
 
         state = finalState
         persistState()
+        didRecoverFromUnreadableState = false
     }
 
     @discardableResult
     func restoreManagedDesktopItems(endingSession: Bool = true) -> Int {
-        let restoredCount = state.managedEntries.count
-        DesktopVisibilitySupport.restoreManagedEntries(
+        let activeSessionID = state.activeSessionID
+        let ownerPID = state.ownerPID
+        let ownerExecutablePath = state.ownerExecutablePath
+        let restoreResult = DesktopVisibilitySupport.restoreManagedEntries(
             state.managedEntries,
             fileIdentities: state.managedFileIdentities
         )
-        state.managedEntries = [:]
-        state.managedFileIdentities = [:]
-        if endingSession {
+        let restoredCount = restoreResult.completedEntries.count
+
+        state = DesktopVisibilitySupport.unresolvedState(
+            from: restoreResult,
+            activeSessionID: activeSessionID,
+            ownerPID: ownerPID,
+            ownerExecutablePath: ownerExecutablePath
+        )
+        if endingSession && state.managedEntries.isEmpty {
             state.activeSessionID = nil
             state.ownerPID = nil
+            state.ownerExecutablePath = nil
+        }
+        if restoreResult.unresolvedCount > 0 {
+            logger.error("Could not restore \(restoreResult.unresolvedCount, privacy: .public) managed Desktop visibility entries")
         }
         persistState()
         return restoredCount

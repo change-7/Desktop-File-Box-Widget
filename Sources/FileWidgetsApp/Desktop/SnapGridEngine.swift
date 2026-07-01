@@ -8,6 +8,7 @@ struct WidgetFrameSnapshot: Equatable {
 enum WidgetSnapMode {
     case move
     case resizeBottomTrailing
+    case resizeFree
 }
 
 struct SnapGridEngine {
@@ -22,7 +23,12 @@ struct SnapGridEngine {
         mode: WidgetSnapMode
     ) -> CGRect? {
         let screenFrame = screen.visibleFrame
-        let clampedFrame = clamp(proposedFrame, to: screenFrame)
+        if case .resizeFree = mode {
+            let clampedFrame = clamp(proposedFrame, to: screenFrame, inset: 0)
+            return normalize(clampedFrame)
+        }
+
+        let clampedFrame = clamp(proposedFrame, to: screenFrame, inset: metrics.desktopInset)
         let snappedFrame = snap(clampedFrame, occupied: occupied, mode: mode)
 
         if isValid(snappedFrame, occupied: occupied, blockedFrames: blockedFrames) {
@@ -47,12 +53,12 @@ struct SnapGridEngine {
         return "\(Int(origin.x)):\(Int(origin.y)):\(Int(size.width)):\(Int(size.height))"
     }
 
-    private func clamp(_ frame: CGRect, to screenFrame: CGRect) -> CGRect {
+    private func clamp(_ frame: CGRect, to screenFrame: CGRect, inset: CGFloat) -> CGRect {
         let clampedSize = metrics.clampedPanelSize(frame.size)
-        let minX = screenFrame.minX + metrics.desktopInset
-        let maxX = screenFrame.maxX - metrics.desktopInset - clampedSize.width
-        let minY = screenFrame.minY + metrics.desktopInset
-        let maxY = screenFrame.maxY - metrics.desktopInset - clampedSize.height
+        let minX = screenFrame.minX + inset
+        let maxX = screenFrame.maxX - inset - clampedSize.width
+        let minY = screenFrame.minY + inset
+        let maxY = screenFrame.maxY - inset - clampedSize.height
 
         return CGRect(
             x: min(max(frame.minX, minX), maxX),
@@ -81,6 +87,9 @@ struct SnapGridEngine {
                 width: snappedSize.width,
                 height: snappedSize.height
             )
+
+        case .resizeFree:
+            return frame
         }
     }
 

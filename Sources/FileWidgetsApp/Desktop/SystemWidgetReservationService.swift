@@ -64,11 +64,11 @@ final class SystemWidgetReservationService {
     }
 
     private func windowBounds(from windowInfo: [String: Any]) -> CGRect? {
-        guard let boundsDictionary = windowInfo[kCGWindowBounds as String] else {
+        guard let boundsDictionary = windowInfo[kCGWindowBounds as String] as? NSDictionary else {
             return nil
         }
 
-        return CGRect(dictionaryRepresentation: boundsDictionary as! CFDictionary)
+        return CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary)
     }
 
     private func resolvedWindowFrame(for rawBounds: CGRect) -> ResolvedWidgetWindow? {

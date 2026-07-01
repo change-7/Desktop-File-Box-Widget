@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import OSLog
 
 @MainActor
 final class DesktopSurfaceManager: ObservableObject {
@@ -9,7 +10,12 @@ final class DesktopSurfaceManager: ObservableObject {
     @Published private(set) var isEditing = false
     @Published private(set) var autoTraySettings = AutoTraySettings.defaultValue
     @Published private(set) var isDesktopHidingPaused = false
+    @Published private(set) var widgetPersistenceWarning: String?
 
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.filetray.app",
+        category: "DesktopSurface"
+    )
     private let snapGridEngine = SnapGridEngine()
     private let systemWidgetReservationService = SystemWidgetReservationService.shared
     private let desktopItemVisibilityService = DesktopItemVisibilityService.shared
@@ -18,6 +24,7 @@ final class DesktopSurfaceManager: ObservableObject {
     private let persistenceStore = WidgetPersistenceStore.shared
     private let autoTraySettingsStore = AutoTraySettingsStore.shared
     private var didBootstrap = false
+    private var isWidgetPersistenceSuspended = false
     private var pendingStateSync: DispatchWorkItem?
     private var pendingVisibilitySync = false
 
@@ -29,21 +36,40 @@ final class DesktopSurfaceManager: ObservableObject {
         desktopItemVisibilityService.recoverInterruptedSessionIfNeeded()
         autoTraySettings = autoTraySettingsStore.load()
         FileDragExportService.shared.setRetentionMinutes(autoTraySettings.dragExportRetentionMinutes)
+        FileDragExportService.shared.performMaintenance()
 
-        let restoredWidgets = persistenceStore.loadWidgets()
-        if restoredWidgets.isEmpty {
+        switch persistenceStore.loadWidgets() {
+        case .missing:
             createEmptyWidget()
-        } else {
+        case .loaded(let restoredWidgets) where restoredWidgets.isEmpty:
+            createEmptyWidget()
+        case .loaded(let restoredWidgets):
             restoredWidgets.forEach { widget in
+                localizeGeneratedTitleIfNeeded(for: widget)
                 _ = addWidgetController(for: widget)
             }
+        case .failed(let backupURL):
+            isWidgetPersistenceSuspended = true
+            widgetPersistenceWarning = L10n.widgetPersistenceWarning(backupName: backupURL?.lastPathComponent)
+            logger.error("Widget persistence is suspended because the saved state could not be loaded")
+            createEmptyWidget(persistState: false)
         }
 
         let sessionID = UUID().uuidString
-        desktopItemVisibilityService.beginSession(ownerPID: getpid(), sessionID: sessionID)
-        desktopItemVisibilityService.launchGuardianIfPossible(sessionID: sessionID, ownerPID: getpid())
+        let ownerPID = getpid()
+        let ownerExecutablePath = Bundle.main.executableURL?.standardizedFileURL.path
+        desktopItemVisibilityService.beginSession(
+            ownerPID: ownerPID,
+            sessionID: sessionID,
+            ownerExecutablePath: ownerExecutablePath
+        )
+        desktopItemVisibilityService.launchGuardianIfPossible(
+            sessionID: sessionID,
+            ownerPID: ownerPID,
+            ownerExecutablePath: ownerExecutablePath
+        )
         pruneMissingDesktopItems()
-        scheduleStateSync(includingVisibilitySync: true)
+        flushState(includingVisibilitySync: true)
         desktopAutoTrayService.start(
             onNewDesktopItem: { [weak self] url in
                 self?.handleNewDesktopItem(url)
@@ -54,10 +80,10 @@ final class DesktopSurfaceManager: ObservableObject {
         )
     }
 
-    func createEmptyWidget() {
+    func createEmptyWidget(persistState: Bool = true) {
         let nextIndex = panelControllers.count
         let widget = WidgetModel(
-            title: nextIndex == 0 ? "Pinned Files" : "Pinned Files \(nextIndex + 1)",
+            title: L10n.pinnedFiles(nextIndex + 1),
             panelSize: metrics.defaultPanelSize,
             backgroundOpacity: 0.78,
             displayMode: .grid,
@@ -66,7 +92,9 @@ final class DesktopSurfaceManager: ObservableObject {
         )
 
         addWidgetController(for: widget)
-        scheduleStateSync(includingVisibilitySync: true)
+        if persistState {
+            scheduleStateSync(includingVisibilitySync: true)
+        }
     }
 
     func widgetContentDidChange() {
@@ -83,7 +111,11 @@ final class DesktopSurfaceManager: ObservableObject {
         pendingVisibilitySync = false
 
         let widgets = currentWidgets()
-        persistenceStore.saveWidgets(widgets)
+        if isWidgetPersistenceSuspended {
+            logger.warning("Skipped widget persistence save because loading saved state failed earlier in this session")
+        } else {
+            persistenceStore.saveWidgets(widgets)
+        }
         guard includingVisibilitySync else { return }
         guard isDesktopHidingPaused == false else {
             desktopItemVisibilityService.restoreManagedDesktopItems(endingSession: false)
@@ -95,11 +127,16 @@ final class DesktopSurfaceManager: ObservableObject {
 
     func prepareForExit() {
         desktopAutoTrayService.stop()
+        FileDragExportService.shared.performMaintenance()
         pendingStateSync?.cancel()
         pendingStateSync = nil
         pendingVisibilitySync = false
 
-        persistenceStore.saveWidgets(currentWidgets())
+        if isWidgetPersistenceSuspended {
+            logger.warning("Skipped widget persistence save during exit because loading saved state failed earlier in this session")
+        } else {
+            persistenceStore.saveWidgets(currentWidgets())
+        }
         desktopItemVisibilityService.restoreManagedDesktopItems()
     }
 
@@ -115,6 +152,24 @@ final class DesktopSurfaceManager: ObservableObject {
 
     private func currentWidgets() -> [WidgetModel] {
         panelControllers.map(\.model)
+    }
+
+    private func localizeGeneratedTitleIfNeeded(for widget: WidgetModel) {
+        switch widget.trayKind {
+        case .manual:
+            guard let generatedIndex = L10n.generatedPinnedFilesIndex(from: widget.title) else { return }
+            widget.title = L10n.pinnedFiles(generatedIndex)
+        case .screenshots:
+            guard L10n.isGeneratedScreenshotsTitle(widget.title) else { return }
+            widget.title = L10n.screenshots
+        case .auto(let category):
+            guard L10n.isGeneratedCategoryTitle(widget.title) else { return }
+            widget.title = category.title
+        case .date:
+            if widget.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                widget.title = widget.trayKind.title
+            }
+        }
     }
 
     private func scheduleStateSync(includingVisibilitySync: Bool) {
@@ -158,6 +213,11 @@ final class DesktopSurfaceManager: ObservableObject {
         persistAutoTraySettings()
     }
 
+    func setOrganizeNewDesktopFilesByDate(_ isEnabled: Bool) {
+        autoTraySettings.organizeNewDesktopFilesByDate = isEnabled
+        persistAutoTraySettings()
+    }
+
     func setAutoTrayCategory(_ category: FileTrayCategory, isEnabled: Bool) {
         if isEnabled {
             autoTraySettings.enabledCategories.insert(category)
@@ -193,6 +253,16 @@ final class DesktopSurfaceManager: ObservableObject {
         persistAutoTraySettings()
     }
 
+    func closeWidget(_ widgetID: UUID) {
+        guard let controllerIndex = panelControllers.firstIndex(where: { $0.widgetID == widgetID }) else {
+            return
+        }
+
+        let controller = panelControllers.remove(at: controllerIndex)
+        controller.close()
+        flushState(includingVisibilitySync: true)
+    }
+
     func removeScreenshotTrayIfEmpty(_ widgetID: UUID) {
         guard let controller = panelControllers.first(where: { $0.widgetID == widgetID }),
               controller.model.trayKind == .screenshots,
@@ -200,9 +270,7 @@ final class DesktopSurfaceManager: ObservableObject {
             return
         }
 
-        controller.close()
-        panelControllers.removeAll { $0.widgetID == widgetID }
-        flushState(includingVisibilitySync: true)
+        closeWidget(widgetID)
     }
 
     func resolveFrame(
@@ -215,18 +283,25 @@ final class DesktopSurfaceManager: ObservableObject {
             return nil
         }
 
-        let screenID = snapGridEngine.screenIdentifier(for: targetScreen)
-        let occupiedFrames = panelControllers.compactMap { controller -> WidgetFrameSnapshot? in
-            guard controller.widgetID != widgetID,
-                  let frame = controller.currentFrame,
-                  let controllerScreen = screen(for: frame, preferredScreen: controller.currentScreen),
-                  snapGridEngine.screenIdentifier(for: controllerScreen) == screenID else {
-                return nil
-            }
+        let occupiedFrames: [WidgetFrameSnapshot]
+        let blockedFrames: [CGRect]
+        if case .resizeFree = mode {
+            occupiedFrames = []
+            blockedFrames = []
+        } else {
+            let screenID = snapGridEngine.screenIdentifier(for: targetScreen)
+            occupiedFrames = panelControllers.compactMap { controller -> WidgetFrameSnapshot? in
+                guard controller.widgetID != widgetID,
+                      let frame = controller.currentFrame,
+                      let controllerScreen = screen(for: frame, preferredScreen: controller.currentScreen),
+                      snapGridEngine.screenIdentifier(for: controllerScreen) == screenID else {
+                    return nil
+                }
 
-            return WidgetFrameSnapshot(widgetID: controller.widgetID, frame: frame)
+                return WidgetFrameSnapshot(widgetID: controller.widgetID, frame: frame)
+            }
+            blockedFrames = systemWidgetReservationService.reservedFrames(on: targetScreen)
         }
-        let blockedFrames = systemWidgetReservationService.reservedFrames(on: targetScreen)
 
         return snapGridEngine.resolveFrame(
             for: proposedFrame,
@@ -301,6 +376,14 @@ final class DesktopSurfaceManager: ObservableObject {
         if settings.collectDesktopScreenshots,
            DesktopFileClassifier.isScreenshot(standardizedURL) {
             addDesktopItem(standardizedURL, to: .screenshots)
+            return
+        }
+
+        if settings.organizeNewDesktopFilesByDate {
+            addDesktopItem(
+                standardizedURL,
+                to: .date(DesktopFileClassifier.dateKey(for: standardizedURL))
+            )
             return
         }
 

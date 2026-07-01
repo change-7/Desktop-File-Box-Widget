@@ -11,23 +11,30 @@ struct VisibilityGuardian {
         }
 
         let sessionID = arguments[1]
+        let ownerExecutablePath = arguments.count >= 4 ? arguments[3] : nil
         let stateStore = DesktopVisibilityStateStore()
 
-        while DesktopVisibilitySupport.processExists(parentPID) {
+        while DesktopVisibilitySupport.processMatches(pid: parentPID, executablePath: ownerExecutablePath) {
             try? await Task.sleep(for: .milliseconds(500))
         }
 
         var state = stateStore.load()
         guard state.activeSessionID == sessionID,
-              state.ownerPID == parentPID else {
+              state.ownerPID == parentPID,
+              state.ownerExecutablePath == ownerExecutablePath else {
             return
         }
 
-        DesktopVisibilitySupport.restoreManagedEntries(
+        let restoreResult = DesktopVisibilitySupport.restoreManagedEntries(
             state.managedEntries,
             fileIdentities: state.managedFileIdentities
         )
-        state = DesktopVisibilityState()
+        state = DesktopVisibilitySupport.unresolvedState(
+            from: restoreResult,
+            activeSessionID: state.activeSessionID,
+            ownerPID: state.ownerPID,
+            ownerExecutablePath: state.ownerExecutablePath
+        )
         try? stateStore.save(state)
     }
 }

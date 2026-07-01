@@ -1,4 +1,5 @@
 import AppKit
+import FileWidgetsSupport
 import QuickLookUI
 import SwiftUI
 
@@ -10,6 +11,7 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
     private var isEditing = false
     private var isResizeDragActive = false
     private var isApplyingFrameUpdate = false
+    private var suppressMoveResolutionUntil = Date.distantPast
     private var hostingView: NSHostingView<WidgetPanelView>?
     private let quickLookKeyMonitor = QuickLookKeyMonitorToken()
 
@@ -44,6 +46,11 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
 
     deinit {
         quickLookKeyMonitor.invalidate()
+    }
+
+    override func close() {
+        tearDownWindowReferences()
+        super.close()
     }
 
     func placeInitialWindow(on screen: NSScreen?) {
@@ -85,6 +92,12 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         panel.keyDownHandler = { [weak self] event in
             self?.handleKeyDown(event) ?? false
         }
+        panel.edgeResizeFrameChanged = { [weak self] frame in
+            self?.applyInteractiveResizeFrame(frame)
+        }
+        panel.edgeResizeActiveChanged = { [weak self] isActive in
+            self?.setResizeDragActive(isActive)
+        }
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
@@ -95,6 +108,21 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        panel.acceptsMouseMovedEvents = true
+    }
+
+    private func tearDownWindowReferences() {
+        closeQuickLookIfNeeded()
+        quickLookKeyMonitor.invalidate()
+        if let panel = window as? DesktopPanel {
+            panel.keyDownHandler = nil
+            panel.edgeResizeFrameChanged = nil
+            panel.edgeResizeActiveChanged = nil
+            panel.isEdgeResizeEnabled = false
+        }
+        window?.delegate = nil
+        window?.contentView = nil
+        hostingView = nil
     }
 
     private func installQuickLookKeyMonitor() {
@@ -113,6 +141,7 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
 
         window.isMovableByWindowBackground = isEditing && !isResizeDragActive
+        (window as? DesktopPanel)?.isEdgeResizeEnabled = isEditing
         if isEditing {
             widgetModel.selectedItemID = nil
             closeQuickLookIfNeeded()
@@ -135,20 +164,24 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         WidgetPanelView(
             widgetModel: widgetModel,
             isEditing: isEditing,
-            onToggleEditLayout: toggleEditLayout,
-            onSetDisplayMode: setDisplayMode,
-            onSelect: selectItem,
-            onOpen: openItem,
-            onRevealInFinder: revealInFinder,
-            onRemoveItem: removeItemFromWidget,
-            onCopyAllItems: copyAllItemsToPasteboard,
-            onMoveItemToTrash: moveItemToTrash,
-            onMoveAllItemsToTrash: moveAllItemsToTrash,
-            onApplyPanelSize: updatePanelSize,
-            onResizeDragActiveChange: setResizeDragActive,
-            onRename: updateTitle,
-            onBackgroundOpacityChange: updateBackgroundOpacity,
-            onDropItems: addDroppedItems
+            onToggleEditLayout: { [weak self] in self?.toggleEditLayout() },
+            onSetDisplayMode: { [weak self] displayMode in self?.setDisplayMode(displayMode) },
+            onSelect: { [weak self] item in self?.selectItem(item) },
+            onOpen: { [weak self] item in self?.openItem(item) },
+            onRevealInFinder: { [weak self] item in self?.revealInFinder(item) },
+            onRemoveItem: { [weak self] item in self?.removeItemFromWidget(item) },
+            onCopyAllItems: { [weak self] in self?.copyAllItemsToPasteboard() },
+            onMoveItemToTrash: { [weak self] item in self?.moveItemToTrash(item) },
+            onMoveAllItemsToTrash: { [weak self] in self?.moveAllItemsToTrash() },
+            onApplyPanelSize: { [weak self] size in self?.updatePanelSize(size) },
+            onRename: { [weak self] title in self?.updateTitle(title) },
+            onBackgroundOpacityChange: { [weak self] opacity in self?.updateBackgroundOpacity(opacity) },
+            onBackgroundColorChange: { [weak self] color in self?.updateBackgroundColor(color) },
+            onDropItems: { [weak self] urls in self?.addDroppedItems(urls) },
+            onCloseTray: { [weak self] in
+                guard let self else { return }
+                self.surfaceManager.closeWidget(self.widgetID)
+            }
         )
     }
 
@@ -186,7 +219,10 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func addDroppedItems(_ urls: [URL]) {
-        guard !isEditing else { return }
+        guard !isEditing,
+              widgetModel.trayKind.isScreenshots == false else {
+            return
+        }
 
         var existingPaths = Set(widgetModel.items.map { $0.url.standardizedFileURL.path })
         let newItems = urls.compactMap { WidgetItem(url: $0) }
@@ -238,17 +274,21 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func moveAllItemsToTrash() {
-        guard confirmMoveAllScreenshotsToTrash() else { return }
-        moveItemsToTrash(widgetModel.items)
+        let eligibleItems = widgetModel.items.filter(isTrashableScreenshotItem)
+        guard eligibleItems.isEmpty == false,
+              confirmMoveAllScreenshotsToTrash() else {
+            return
+        }
+        moveItemsToTrash(eligibleItems)
     }
 
     private func confirmMoveAllScreenshotsToTrash() -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Move all screenshots to Trash?"
-        alert.informativeText = "This will move the original files to the macOS Trash. When the tray becomes empty, File Tray removes it and will create a fresh Screenshots tray for the next screenshot."
+        alert.messageText = L10n.moveAllScreenshotsAlertTitle
+        alert.informativeText = L10n.moveAllScreenshotsAlertMessage
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L10n.moveToTrash)
+        alert.addButton(withTitle: L10n.cancel)
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -260,6 +300,10 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
 
         var removedItemIDs = Set<WidgetItem.ID>()
         for item in items {
+            guard isTrashableScreenshotItem(item) else {
+                continue
+            }
+
             if FileManager.default.fileExists(atPath: item.url.path) == false {
                 removedItemIDs.insert(item.id)
                 continue
@@ -290,14 +334,43 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func isTrashableScreenshotItem(_ item: WidgetItem) -> Bool {
+        guard widgetModel.trayKind.isScreenshots,
+              item.kind == .file,
+              isDirectDesktopChild(item.url),
+              DesktopFileClassifier.isScreenshot(item.url),
+              let expectedIdentity = item.fileIdentity,
+              let currentIdentity = DesktopVisibilitySupport.fileIdentity(for: item.url),
+              currentIdentity == expectedIdentity else {
+            return false
+        }
+
+        return true
+    }
+
+    private func isDirectDesktopChild(_ url: URL) -> Bool {
+        guard let desktopDirectoryURL else { return false }
+        let normalizedURL = url.standardizedFileURL.resolvingSymlinksInPath()
+        return normalizedURL.deletingLastPathComponent().standardizedFileURL == desktopDirectoryURL
+    }
+
+    private var desktopDirectoryURL: URL? {
+        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.standardizedFileURL
+    }
+
     private func updateTitle(_ title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        widgetModel.title = trimmed.isEmpty ? "Untitled Widget" : trimmed
+        widgetModel.title = trimmed.isEmpty ? L10n.untitledWidget : trimmed
         surfaceManager.widgetAppearanceDidChange()
     }
 
     private func updateBackgroundOpacity(_ opacity: Double) {
         widgetModel.backgroundOpacity = min(max(opacity, 0.0), 1.0)
+        surfaceManager.widgetAppearanceDidChange()
+    }
+
+    private func updateBackgroundColor(_ color: WidgetBackgroundColor?) {
+        widgetModel.backgroundColor = color
         surfaceManager.widgetAppearanceDidChange()
     }
 
@@ -322,9 +395,60 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
         )
     }
 
+    private func applyInteractiveResizeFrame(_ frame: CGRect) {
+        guard isEditing, let window else { return }
+
+        let resolvedFrame = clampedInteractiveResizeFrame(frame, preferredScreen: window.screen)
+        guard framesDiffer(window.frame, resolvedFrame) else { return }
+
+        suppressMoveResolutionBriefly()
+        isApplyingFrameUpdate = true
+        window.setFrame(resolvedFrame, display: true, animate: false)
+        isApplyingFrameUpdate = false
+    }
+
     private func setResizeDragActive(_ isActive: Bool) {
+        let wasActive = isResizeDragActive
         isResizeDragActive = isActive
         window?.isMovableByWindowBackground = isEditing && !isResizeDragActive
+
+        if wasActive, !isActive {
+            commitCurrentInteractiveResizeFrame()
+        }
+    }
+
+    private func commitCurrentInteractiveResizeFrame() {
+        guard isEditing, let window else { return }
+
+        suppressMoveResolutionBriefly()
+        _ = resolveAndApplyFrame(
+            proposedFrame: window.frame,
+            preferredScreen: window.screen,
+            mode: .resizeFree,
+            restoreOnFailure: false,
+            commitToModel: true
+        )
+    }
+
+    private func clampedInteractiveResizeFrame(_ frame: CGRect, preferredScreen: NSScreen?) -> CGRect {
+        let targetScreen = preferredScreen
+            ?? NSScreen.screens.first(where: { $0.frame.intersects(frame) })
+            ?? NSScreen.main
+        let screenFrame = targetScreen?.visibleFrame ?? frame
+        let clampedSize = gridMetrics.clampedPanelSize(frame.size)
+        let maxX = max(screenFrame.minX, screenFrame.maxX - clampedSize.width)
+        let maxY = max(screenFrame.minY, screenFrame.maxY - clampedSize.height)
+
+        return CGRect(
+            x: min(max(frame.minX, screenFrame.minX), maxX),
+            y: min(max(frame.minY, screenFrame.minY), maxY),
+            width: clampedSize.width,
+            height: clampedSize.height
+        )
+    }
+
+    private func suppressMoveResolutionBriefly() {
+        suppressMoveResolutionUntil = Date().addingTimeInterval(0.25)
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
@@ -547,12 +671,21 @@ final class DesktopWidgetPanelController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
-        guard isEditing, !isApplyingFrameUpdate else { return }
+        guard isEditing,
+              !isResizeDragActive,
+              !isApplyingFrameUpdate,
+              Date() >= suppressMoveResolutionUntil else {
+            return
+        }
         _ = resolveAndApplyFrame(mode: .move)
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
-        guard !isApplyingFrameUpdate else { return }
+        guard !isResizeDragActive,
+              !isApplyingFrameUpdate,
+              Date() >= suppressMoveResolutionUntil else {
+            return
+        }
         _ = resolveAndApplyFrame(preferredScreen: window?.screen, mode: .move)
     }
 }
@@ -566,6 +699,17 @@ private enum SelectionDirection {
 
 private extension DesktopWidgetPanelController {
     static let quickLookHandledKeyCodes: Set<UInt16> = [36, 49, 76, 123, 124, 125, 126]
+
+    nonisolated static func runOnMainActor<T: Sendable>(
+        fallback: @autoclosure () -> T,
+        _ body: @MainActor () -> T
+    ) -> T {
+        guard Thread.isMainThread else {
+            return fallback()
+        }
+
+        return MainActor.assumeIsolated(body)
+    }
 }
 
 private final class QuickLookKeyMonitorToken: @unchecked Sendable {
@@ -581,33 +725,33 @@ private final class QuickLookKeyMonitorToken: @unchecked Sendable {
 
 extension DesktopWidgetPanelController: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
-        MainActor.assumeIsolated {
+        Self.runOnMainActor(fallback: false) {
             !isEditing && selectedItem != nil
         }
     }
 
     nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        MainActor.assumeIsolated {
+        Self.runOnMainActor(fallback: ()) {
             panel.dataSource = self
             panel.delegate = self
         }
     }
 
     nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        MainActor.assumeIsolated {
+        Self.runOnMainActor(fallback: ()) {
             panel.dataSource = nil
             panel.delegate = nil
         }
     }
 
     nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        MainActor.assumeIsolated {
+        Self.runOnMainActor(fallback: 0) {
             selectedItem == nil ? 0 : 1
         }
     }
 
     nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        MainActor.assumeIsolated {
+        Self.runOnMainActor(fallback: nil) {
             selectedItem?.url as NSURL?
         }
     }

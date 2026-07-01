@@ -3,13 +3,21 @@ import Foundation
 import UniformTypeIdentifiers
 
 enum DesktopFileClassifier {
+    static func dateKey(for url: URL) -> String {
+        let resourceValues = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        let date = resourceValues?.creationDate
+            ?? resourceValues?.contentModificationDate
+            ?? Date()
+        return DateTrayFormatter.key(for: date)
+    }
+
     static func isScreenshot(_ url: URL) -> Bool {
         guard isImage(url) else { return false }
 
         if let metadataItem = MDItemCreate(nil, url.path as CFString),
            let isScreenCapture = MDItemCopyAttribute(metadataItem, "kMDItemIsScreenCapture" as CFString) {
-            if CFGetTypeID(isScreenCapture) == CFBooleanGetTypeID() {
-                return CFBooleanGetValue((isScreenCapture as! CFBoolean))
+            if let isScreenCapture = isScreenCapture as? Bool {
+                return isScreenCapture
             }
         }
 

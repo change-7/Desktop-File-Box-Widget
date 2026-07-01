@@ -12,6 +12,7 @@ final class DesktopAutoTrayService {
     private var directoryDescriptor: CInt = -1
     private var directorySource: DispatchSourceFileSystemObject?
     private var pendingScan: DispatchWorkItem?
+    private var candidateTasks: [String: Task<Void, Never>] = [:]
     private var knownItems: [String: String] = [:]
     private var startedAt = Date()
     private var onNewDesktopItem: ((URL) -> Void)?
@@ -60,6 +61,8 @@ final class DesktopAutoTrayService {
     func stop() {
         pendingScan?.cancel()
         pendingScan = nil
+        candidateTasks.values.forEach { $0.cancel() }
+        candidateTasks.removeAll()
         directorySource?.cancel()
         directorySource = nil
         onNewDesktopItem = nil
@@ -110,12 +113,23 @@ final class DesktopAutoTrayService {
     }
 
     private func scheduleCandidateProcessing(_ url: URL) {
-        Task { [weak self] in
+        let path = url.path
+        candidateTasks[path]?.cancel()
+
+        let task = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(850))
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                self?.processCandidate(url)
+                guard let self,
+                      !Task.isCancelled else {
+                    return
+                }
+
+                self.candidateTasks[path] = nil
+                self.processCandidate(url)
             }
         }
+        candidateTasks[path] = task
     }
 
     private func processCandidate(_ url: URL) {

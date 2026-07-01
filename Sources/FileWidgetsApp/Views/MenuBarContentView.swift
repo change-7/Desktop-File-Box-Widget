@@ -10,26 +10,26 @@ struct MenuBarContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button("Open Control Center") {
+            Button(L10n.openControlCenter) {
                 openWindow(id: "control-center")
                 appDelegate?.showControlCenter()
             }
 
-            Button("Hide Control Center") {
+            Button(L10n.hideControlCenter) {
                 appDelegate?.hideControlCenter()
             }
 
-            Button("Create Empty Widget") {
+            Button(L10n.createEmptyWidget) {
                 surfaceManager.createEmptyWidget()
             }
 
             Divider()
 
-            Button(surfaceManager.isEditing ? "Finish Layout" : "Edit Layout") {
+            Button(surfaceManager.isEditing ? L10n.finishLayout : L10n.editLayout) {
                 surfaceManager.toggleEditMode()
             }
 
-            Button(surfaceManager.isDesktopHidingPaused ? "Resume Desktop Hiding" : "Show Hidden Desktop Files") {
+            Button(surfaceManager.isDesktopHidingPaused ? L10n.resumeDesktopHiding : L10n.showHiddenDesktopFiles) {
                 if surfaceManager.isDesktopHidingPaused {
                     surfaceManager.resumeDesktopHiding()
                 } else {
@@ -39,7 +39,7 @@ struct MenuBarContentView: View {
 
             Divider()
 
-            Button("Quit File Tray") {
+            Button(L10n.quitFileTray) {
                 NSApp.terminate(nil)
             }
         }

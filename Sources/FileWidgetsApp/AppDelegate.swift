@@ -30,6 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isControlCenter(_ window: NSWindow) -> Bool {
-        window.title == "Control Center"
+        window.title == L10n.controlCenter
     }
 }
